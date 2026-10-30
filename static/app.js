@@ -4,6 +4,7 @@ let currentProjectId = null;
 let currentProjectSlug = null;
 let boards = [];
 let currentBoardId = null;
+let columnSorts = {};
 let allTasks = [];
 let tasks = [];
 let columns = [];
@@ -484,6 +485,46 @@ function restoreBoardScroll(state) {
   });
 }
 
+const PRIORITY_RANK = { Critical: 0, High: 1, Medium: 2, Low: 3 };
+
+function columnSortKey(columnId) {
+  return `${currentProjectId}:${currentBoardId ?? "none"}:${columnId}`;
+}
+
+function columnSortMode(columnId) {
+  return columnSorts[columnSortKey(columnId)] || "none";
+}
+
+function saveColumnSorts() {
+  try {
+    localStorage.setItem("kanbanColumnSorts", JSON.stringify(columnSorts));
+  } catch (e) {}
+}
+
+function sortedColumnTasks(columnId) {
+  const list = tasks.filter(t => t.column_id === columnId);
+  const mode = columnSortMode(columnId);
+  if (mode === "none") return list;
+  const copy = [...list];
+  if (mode === "priority") {
+    copy.sort((a, b) => {
+      const rank = (PRIORITY_RANK[a.priority] ?? 9) - (PRIORITY_RANK[b.priority] ?? 9);
+      return rank || (b.id - a.id);
+    });
+  } else if (mode === "date_desc") {
+    copy.sort((a, b) => {
+      const diff = Date.parse(b.created_at || 0) - Date.parse(a.created_at || 0);
+      return (Number.isNaN(diff) ? 0 : diff) || (b.id - a.id);
+    });
+  } else if (mode === "date_asc") {
+    copy.sort((a, b) => {
+      const diff = Date.parse(a.created_at || 0) - Date.parse(b.created_at || 0);
+      return (Number.isNaN(diff) ? 0 : diff) || (a.id - b.id);
+    });
+  }
+  return copy;
+}
+
 function renderBoard() {
   const board = $("#board");
   // Polling re-renders the whole board; keep the user's scroll position.
@@ -501,17 +542,36 @@ function renderBoard() {
           <span class="column-title">${escapeHtml(col.name)}</span>
           <span class="counter-badge">${count}</span>
         </div>
-        <div class="column-menu">
-          <button class="menu-btn" type="button">•••</button>
-          <div class="menu-panel">
-            <button data-action="rename">Переименовать</button>
-            <button data-action="color">Цвет</button>
-            <button data-action="delete" class="danger">Удалить</button>
+        <div class="column-tools">
+          <select class="column-sort" data-column-id="${col.id}" title="Сортировка задач в колонке">
+            <option value="none">Без сортировки</option>
+            <option value="priority">Важность</option>
+            <option value="date_desc">Дата ↓</option>
+            <option value="date_asc">Дата ↑</option>
+          </select>
+          <div class="column-menu">
+            <button class="menu-btn" type="button">•••</button>
+            <div class="menu-panel">
+              <button data-action="rename">Переименовать</button>
+              <button data-action="color">Цвет</button>
+              <button data-action="delete" class="danger">Удалить</button>
+            </div>
           </div>
         </div>
       </div>
       <div class="column-body" data-column-id="${col.id}"></div>
     `;
+    const sortSelect = colEl.querySelector(".column-sort");
+    sortSelect.value = columnSortMode(col.id);
+    sortSelect.addEventListener("change", (e) => {
+      e.stopPropagation();
+      columnSorts[columnSortKey(col.id)] = e.target.value;
+      saveColumnSorts();
+      renderBoard();
+    });
+    // Do not let the sort control start a card drag or close menus.
+    sortSelect.addEventListener("mousedown", (e) => e.stopPropagation());
+    sortSelect.addEventListener("click", (e) => e.stopPropagation());
     const body = colEl.querySelector(".column-body");
     body.addEventListener("dragover", (e) => {
       if (draggedTaskId == null) return;
@@ -583,7 +643,7 @@ function renderBoard() {
       } catch (err) { alert(err.message); }
     });
 
-    tasks.filter(t => t.column_id === col.id).forEach(t => {
+    sortedColumnTasks(col.id).forEach(t => {
       const card = document.createElement("div");
       card.className = "card";
       card.draggable = true;
@@ -1267,6 +1327,11 @@ async function analyze() {
 
 /* ---------- Init ---------- */
 document.addEventListener("DOMContentLoaded", async () => {
+  try {
+    columnSorts = JSON.parse(localStorage.getItem("kanbanColumnSorts") || "{}") || {};
+  } catch (e) {
+    columnSorts = {};
+  }
   await loadProjects();
   await loadBoards();
   await loadCategories();

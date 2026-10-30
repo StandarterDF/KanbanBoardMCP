@@ -7,7 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/static/style.css?v=20261031-2">
+<link rel="stylesheet" href="/static/style.css?v=20261031-3">
 </head>
 <body>
 <header class="topbar">
@@ -15,34 +15,34 @@
     <div class="brand">Kanban</div>
     <div class="project-switcher">
       <select id="projectSelect"></select>
-      <button id="btnNewProject" class="icon-btn" title="Новый проект">+</button>
-      <button id="btnRenameProject" class="icon-btn" title="Переименовать">✎</button>
-      <button id="btnDeleteProject" class="icon-btn" title="Удалить">🗑</button>
+      <button id="btnNewProject" class="icon-btn" title="РќРѕРІС‹Р№ РїСЂРѕРµРєС‚">+</button>
+      <button id="btnRenameProject" class="icon-btn" title="РџРµСЂРµРёРјРµРЅРѕРІР°С‚СЊ">вњЋ</button>
+      <button id="btnDeleteProject" class="icon-btn" title="РЈРґР°Р»РёС‚СЊ">рџ—‘</button>
     </div>
   </div>
   <div class="topbar-search">
-    <input id="searchInput" type="text" placeholder="Поиск по названию / описанию..." />
+    <input id="searchInput" type="text" placeholder="РџРѕРёСЃРє РїРѕ РЅР°Р·РІР°РЅРёСЋ / РѕРїРёСЃР°РЅРёСЋ..." />
   </div>
   <div class="topbar-filters">
     <div class="ms" id="catFilter">
-      <button class="ms-btn" type="button">Категории ▾</button>
+      <button class="ms-btn" type="button">РљР°С‚РµРіРѕСЂРёРё в–ѕ</button>
       <div class="ms-panel"></div>
     </div>
     <div class="ms" id="prioFilter">
-      <button class="ms-btn" type="button">Приоритеты ▾</button>
+      <button class="ms-btn" type="button">РџСЂРёРѕСЂРёС‚РµС‚С‹ в–ѕ</button>
       <div class="ms-panel"></div>
     </div>
   </div>
   <div class="topbar-actions">
-    <button id="btnNewTask" class="btn btn-primary">+ Задача</button>
-    <button id="btnAnalyze" class="btn btn-ghost">Анализ</button>
-    <button id="btnSettings" class="btn btn-ghost">⚙</button>
+    <button id="btnNewTask" class="btn btn-primary">+ Р—Р°РґР°С‡Р°</button>
+    <button id="btnAnalyze" class="btn btn-ghost">РђРЅР°Р»РёР·</button>
+    <button id="btnSettings" class="btn btn-ghost">вљ™</button>
   </div>
 </header>
 
 <div class="boards-bar" id="boardsBar">
   <div class="board-tabs" id="boardTabs"></div>
-  <button id="btnNewBoard" class="btn btn-ghost boards-add" type="button">+ Доска</button>
+  <button id="btnNewBoard" class="btn btn-ghost boards-add" type="button">+ Р”РѕСЃРєР°</button>
 </div>
 
 <main class="board" id="board"></main>
@@ -51,35 +51,35 @@
 <div class="modal-overlay" id="taskModal">
   <div class="modal modal-task" id="taskModalDialog">
     <div class="modal-header">
-      <h2 id="modalTitle">Задача</h2>
+      <h2 id="modalTitle">Р—Р°РґР°С‡Р°</h2>
       <div class="modal-header-actions">
-        <button class="icon-btn" id="btnFullscreen" title="Развернуть на весь экран">⛶</button>
-        <button class="icon-btn" id="modalClose">✕</button>
+        <button class="icon-btn" id="btnFullscreen" title="Р Р°Р·РІРµСЂРЅСѓС‚СЊ РЅР° РІРµСЃСЊ СЌРєСЂР°РЅ">в›¶</button>
+        <button class="icon-btn" id="modalClose">вњ•</button>
       </div>
     </div>
     <div class="modal-body task-layout">
       <input type="hidden" id="taskId" />
       <div class="task-main">
-        <input type="text" id="taskTitle" class="task-title-input" placeholder="Название задачи" />
+        <input type="text" id="taskTitle" class="task-title-input" placeholder="РќР°Р·РІР°РЅРёРµ Р·Р°РґР°С‡Рё" />
 
         <div class="modal-tabs">
-          <button class="modal-tab active" id="btnTabDesc" type="button">Описание</button>
-          <button class="modal-tab" id="btnTabHistory" type="button">История</button>
+          <button class="modal-tab active" id="btnTabDesc" type="button">РћРїРёСЃР°РЅРёРµ</button>
+          <button class="modal-tab" id="btnTabHistory" type="button">РСЃС‚РѕСЂРёСЏ</button>
         </div>
 
         <div class="task-pane" id="taskDescPane">
           <div class="desc-toolbar">
-            <button class="tab active" id="btnEditDesc" type="button">Редактировать</button>
-            <button class="tab" id="btnPreviewDesc" type="button">Предпросмотр</button>
+            <button class="tab active" id="btnEditDesc" type="button">Р РµРґР°РєС‚РёСЂРѕРІР°С‚СЊ</button>
+            <button class="tab" id="btnPreviewDesc" type="button">РџСЂРµРґРїСЂРѕСЃРјРѕС‚СЂ</button>
           </div>
-          <textarea id="taskDesc" rows="8" placeholder="Описание / критерии приёмки (Markdown)"></textarea>
+          <textarea id="taskDesc" rows="8" placeholder="РћРїРёСЃР°РЅРёРµ / РєСЂРёС‚РµСЂРёРё РїСЂРёС‘РјРєРё (Markdown)"></textarea>
           <div id="taskDescPreview" class="markdown-body" style="display:none"></div>
           <div class="comments-section" id="commentsSection" style="display:none">
-            <h3>Комментарии</h3>
+            <h3>РљРѕРјРјРµРЅС‚Р°СЂРёРё</h3>
             <div class="comments-list" id="commentsList"></div>
             <div class="comment-form">
-              <input type="text" id="commentText" placeholder="Написать комментарий...">
-              <button class="btn btn-primary" id="btnAddComment">Отправить</button>
+              <input type="text" id="commentText" placeholder="РќР°РїРёСЃР°С‚СЊ РєРѕРјРјРµРЅС‚Р°СЂРёР№...">
+              <button class="btn btn-primary" id="btnAddComment">РћС‚РїСЂР°РІРёС‚СЊ</button>
             </div>
           </div>
         </div>
@@ -90,50 +90,50 @@
       </div>
       <aside class="task-sidebar">
         <div class="side-card">
-          <label>Статус</label>
+          <label>РЎС‚Р°С‚СѓСЃ</label>
           <div class="status-list" id="statusList"></div>
         </div>
         <div class="side-card">
-          <label>Приоритет</label>
+          <label>РџСЂРёРѕСЂРёС‚РµС‚</label>
           <select id="taskPriority">
             <option>Low</option><option>Medium</option><option>High</option><option>Critical</option>
           </select>
         </div>
         <div class="side-card">
-          <label>Категория</label>
+          <label>РљР°С‚РµРіРѕСЂРёСЏ</label>
           <select id="taskCategory"></select>
         </div>
         <div class="side-card">
-          <label>Доска</label>
+          <label>Р”РѕСЃРєР°</label>
           <select id="taskBoard"></select>
         </div>
         <div class="side-card">
           <label>Agent ID</label>
-          <input type="text" id="taskAgent" placeholder="—" />
+          <input type="text" id="taskAgent" placeholder="вЂ”" />
         </div>
         <div class="side-card">
-          <label>Затронутые файлы</label>
+          <label>Р—Р°С‚СЂРѕРЅСѓС‚С‹Рµ С„Р°Р№Р»С‹</label>
           <textarea id="taskAffectedFiles" rows="4" placeholder="path/to/file.py, ..."></textarea>
         </div>
         <div class="side-card meta-card">
-          <label>ID задачи</label>
+          <label>ID Р·Р°РґР°С‡Рё</label>
           <div class="id-row">
-            <input type="text" id="taskPublicId" readonly placeholder="появится после сохранения" />
-            <button class="btn btn-ghost btn-copy-id" id="btnCopyTaskId" type="button" disabled>Копировать ID</button>
+            <input type="text" id="taskPublicId" readonly placeholder="РїРѕСЏРІРёС‚СЃСЏ РїРѕСЃР»Рµ СЃРѕС…СЂР°РЅРµРЅРёСЏ" />
+            <button class="btn btn-ghost btn-copy-id" id="btnCopyTaskId" type="button" disabled>РљРѕРїРёСЂРѕРІР°С‚СЊ ID</button>
           </div>
-          <label>Создано</label>
-          <div class="time-value" id="taskCreated">—</div>
-          <label>Обновлено</label>
-          <div class="time-value" id="taskUpdated">—</div>
-          <label>Последнее перемещение</label>
-          <div class="time-value" id="taskLastMove">—</div>
+          <label>РЎРѕР·РґР°РЅРѕ</label>
+          <div class="time-value" id="taskCreated">вЂ”</div>
+          <label>РћР±РЅРѕРІР»РµРЅРѕ</label>
+          <div class="time-value" id="taskUpdated">вЂ”</div>
+          <label>РџРѕСЃР»РµРґРЅРµРµ РїРµСЂРµРјРµС‰РµРЅРёРµ</label>
+          <div class="time-value" id="taskLastMove">вЂ”</div>
         </div>
       </aside>
     </div>
     <div class="modal-footer">
-      <button class="btn btn-danger" id="btnDeleteTask" type="button">Удалить</button>
+      <button class="btn btn-danger" id="btnDeleteTask" type="button">РЈРґР°Р»РёС‚СЊ</button>
       <span id="saveStatus" class="save-status" aria-live="polite"></span>
-      <button class="btn btn-primary" id="btnSaveTask" type="button">Сохранить</button>
+      <button class="btn btn-primary" id="btnSaveTask" type="button">РЎРѕС…СЂР°РЅРёС‚СЊ</button>
     </div>
   </div>
 </div>
@@ -142,21 +142,21 @@
 <div class="modal-overlay" id="columnModal">
   <div class="modal modal-sm">
     <div class="modal-header">
-      <h2 id="columnModalTitle">Колонка</h2>
-      <button class="icon-btn" id="columnModalClose">✕</button>
+      <h2 id="columnModalTitle">РљРѕР»РѕРЅРєР°</h2>
+      <button class="icon-btn" id="columnModalClose">вњ•</button>
     </div>
     <div class="modal-body">
       <input type="hidden" id="columnId">
-      <label>Название
-        <input type="text" id="columnName" placeholder="Название колонки">
+      <label>РќР°Р·РІР°РЅРёРµ
+        <input type="text" id="columnName" placeholder="РќР°Р·РІР°РЅРёРµ РєРѕР»РѕРЅРєРё">
       </label>
-      <label>Цвет
+      <label>Р¦РІРµС‚
         <input type="color" id="columnColor" value="#4a90d9">
       </label>
     </div>
     <div class="modal-footer">
-      <button class="btn btn-danger" id="btnDeleteColumn">Удалить</button>
-      <button class="btn btn-primary" id="btnSaveColumn">Сохранить</button>
+      <button class="btn btn-danger" id="btnDeleteColumn">РЈРґР°Р»РёС‚СЊ</button>
+      <button class="btn btn-primary" id="btnSaveColumn">РЎРѕС…СЂР°РЅРёС‚СЊ</button>
     </div>
   </div>
 </div>
@@ -165,12 +165,12 @@
 <div class="drawer-overlay" id="settingsOverlay"></div>
 <aside class="drawer" id="settingsDrawer">
   <div class="drawer-header">
-    <h2>Настройки MCP</h2>
-    <button class="icon-btn" id="settingsClose">✕</button>
+    <h2>РќР°СЃС‚СЂРѕР№РєРё MCP</h2>
+    <button class="icon-btn" id="settingsClose">вњ•</button>
   </div>
   <div class="drawer-body" id="settingsBody"></div>
 </aside>
 
-<script src="/static/app.js?v=20261031-2"></script>
+<script src="/static/app.js?v=20261031-3"></script>
 </body>
 </html>
