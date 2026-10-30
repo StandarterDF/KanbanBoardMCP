@@ -551,6 +551,10 @@ async function openTaskModal(taskId) {
     $("#taskAgent").value = t.agent_id || "";
     $("#taskAffectedFiles").value = t.affected_files || "";
     $("#modalTitle").textContent = `Задача #${t.id}`;
+    $("#taskPublicId").value = t.id;
+    $("#btnCopyTaskId").disabled = false;
+    $("#btnCopyTaskId").textContent = "Копировать ID";
+    $("#saveStatus").textContent = "";
     $("#commentsSection").style.display = "block";
     $("#taskCreated").textContent = formatDateTime(t.created_at);
     $("#taskUpdated").textContent = formatDateTime(t.updated_at);
@@ -566,6 +570,10 @@ async function openTaskModal(taskId) {
     $("#taskAgent").value = "";
     $("#taskAffectedFiles").value = "";
     $("#modalTitle").textContent = "Новая задача";
+    $("#taskPublicId").value = "";
+    $("#btnCopyTaskId").disabled = true;
+    $("#btnCopyTaskId").textContent = "Копировать ID";
+    $("#saveStatus").textContent = "";
     $("#commentsList").innerHTML = "";
     $("#taskCreated").textContent = "—";
     $("#taskUpdated").textContent = "—";
@@ -799,11 +807,10 @@ async function saveTask() {
       await api(`/tasks/${id}`, { method: "PUT", body: JSON.stringify(payload) });
       dirty = false;
       await loadTasks();
-      const fresh = await api(`/tasks/${id}`);
-      $("#taskCreated").textContent = formatDateTime(fresh.created_at);
-      $("#taskUpdated").textContent = formatDateTime(fresh.updated_at);
-      renderStatusButtons(fresh.column_id);
-      await loadTaskHistory(id);
+      // Reload the same task in-place. This keeps the modal open, refreshes
+      // timestamps/history/status buttons and cannot be affected by stale DOM.
+      await openTaskModal(id);
+      showSaveStatus("Сохранено");
     } else {
       const created = await api("/tasks", { method: "POST", body: JSON.stringify({ ...payload, project_id: currentProjectId }) });
       dirty = false;
@@ -811,8 +818,63 @@ async function saveTask() {
       // Reload the modal as an existing task: comments, history, timestamps,
       // and the adjacent-stages-only status restriction now apply.
       await openTaskModal(created.id);
+      $("#taskId").value = created.id;
+      $("#taskPublicId").value = created.id;
+      $("#btnCopyTaskId").disabled = false;
+      $("#taskModal").classList.add("active");
+      showSaveStatus("Сохранено");
     }
   } catch (err) { alert(err.message); }
+}
+
+function showSaveStatus(msg) {
+  const el = $("#saveStatus");
+  if (!el) return;
+  el.textContent = msg || "Сохранено";
+  el.classList.add("visible");
+  if (showSaveStatus._timer) clearTimeout(showSaveStatus._timer);
+  showSaveStatus._timer = setTimeout(() => {
+    el.textContent = "";
+    el.classList.remove("visible");
+  }, 1800);
+}
+
+async function copyTaskId() {
+  const input = $("#taskPublicId");
+  const value = String(input ? input.value : "").trim();
+  if (!value) return;
+  const btn = $("#btnCopyTaskId");
+  const original = "Копировать ID";
+  let ok = false;
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(value);
+      ok = true;
+    }
+  } catch (e) { ok = false; }
+  if (!ok) {
+    const ta = document.createElement("textarea");
+    ta.value = value;
+    ta.style.position = "fixed";
+    ta.style.left = "-9999px";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+    document.body.removeChild(ta);
+  }
+  if (ok && btn) {
+    btn.textContent = "Скопировано";
+    btn.classList.add("copied");
+    if (copyTaskId._timer) clearTimeout(copyTaskId._timer);
+    copyTaskId._timer = setTimeout(() => {
+      btn.textContent = original;
+      btn.classList.remove("copied");
+    }, 1500);
+  } else if (btn) {
+    window.prompt("Скопируйте ID:", value);
+  }
 }
 
 async function deleteTask() {
@@ -1045,7 +1107,8 @@ document.addEventListener("DOMContentLoaded", async () => {
   $("#btnSettings").addEventListener("click", openSettings);
   $("#btnAnalyze").addEventListener("click", analyze);
   $("#modalClose").addEventListener("click", closeModal);
-  $("#btnSaveTask").addEventListener("click", saveTask);
+  $("#btnSaveTask").addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); saveTask(); });
+  $("#btnCopyTaskId").addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); copyTaskId(); });
   $("#btnDeleteTask").addEventListener("click", deleteTask);
   $("#btnFullscreen").addEventListener("click", () => toggleFullscreen());
 
@@ -1093,6 +1156,8 @@ document.addEventListener("DOMContentLoaded", async () => {
   $("#settingsClose").addEventListener("click", closeSettings);
   $("#settingsOverlay").addEventListener("click", closeSettings);
   $("#taskModal").addEventListener("click", (e) => { if (e.target.id === "taskModal") closeModal(); });
+  // Never let clicks inside the dialog bubble to the overlay and close it.
+  $("#taskModalDialog").addEventListener("click", (e) => e.stopPropagation());
 
   trackDirty();
 

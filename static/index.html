@@ -7,7 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/static/style.css">
+<link rel="stylesheet" href="/static/style.css?v=20261030-3">
 </head>
 <body>
 <header class="topbar">
@@ -107,6 +107,11 @@
           <textarea id="taskAffectedFiles" rows="4" placeholder="path/to/file.py, ..."></textarea>
         </div>
         <div class="side-card meta-card">
+          <label>ID задачи</label>
+          <div class="id-row">
+            <input type="text" id="taskPublicId" readonly placeholder="появится после сохранения" />
+            <button class="btn btn-ghost btn-copy-id" id="btnCopyTaskId" type="button" disabled>Копировать ID</button>
+          </div>
           <label>Создано</label>
           <div class="time-value" id="taskCreated">—</div>
           <label>Обновлено</label>
@@ -117,8 +122,9 @@
       </aside>
     </div>
     <div class="modal-footer">
-      <button class="btn btn-danger" id="btnDeleteTask">Удалить</button>
-      <button class="btn btn-primary" id="btnSaveTask">Сохранить</button>
+      <button class="btn btn-danger" id="btnDeleteTask" type="button">Удалить</button>
+      <span id="saveStatus" class="save-status" aria-live="polite"></span>
+      <button class="btn btn-primary" id="btnSaveTask" type="button">Сохранить</button>
     </div>
   </div>
 </div>
@@ -156,6 +162,6 @@
   <div class="drawer-body" id="settingsBody"></div>
 </aside>
 
-<script src="/static/app.js"></script>
+<script src="/static/app.js?v=20261030-3"></script>
 </body>
 </html>
