@@ -9,6 +9,7 @@ let dirty = false;
 let currentTaskId = null;
 let descMode = "edit";
 let fullscreen = false;
+let historyEvents = [];
 
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => document.querySelectorAll(sel);
@@ -32,6 +33,74 @@ async function api(path, opts = {}) {
 
 function escapeHtml(s) {
   return String(s ?? "").replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
+}
+
+/* ---------- Dates & stage helpers ---------- */
+// Selects must never look empty when the stored value differs only by case
+// (e.g. legacy "high"/"balance") or is a custom user value.
+function setSelectValue(select, value) {
+  if (!select || value === null || value === undefined || value === "") return;
+  const target = String(value);
+  const match = Array.from(select.options).find(
+    (opt) => opt.value.toLowerCase() === target.toLowerCase()
+  );
+  if (match) {
+    select.value = match.value;
+    return;
+  }
+  const opt = document.createElement("option");
+  opt.value = target;
+  opt.textContent = target;
+  select.appendChild(opt);
+  select.value = target;
+}
+
+function formatDateTime(value) {
+  if (!value) return "—";
+  const d = new Date(value);
+  if (isNaN(d.getTime())) return String(value);
+  try {
+    return d.toLocaleString("ru-RU", {
+      day: "2-digit", month: "2-digit", year: "numeric",
+      hour: "2-digit", minute: "2-digit",
+    });
+  } catch (e) {
+    return d.toLocaleString();
+  }
+}
+
+function columnById(id) {
+  return columns.find(c => c.id === id) || null;
+}
+
+function columnPosition(id) {
+  return columns.findIndex(c => c.id === id);
+}
+
+// Only previous/next columns in the sorted project stage list are reachable.
+function adjacentColumns(columnId) {
+  const i = columnPosition(columnId);
+  if (i < 0) return [];
+  return [columns[i - 1], columns[i + 1]].filter(Boolean);
+}
+
+function allowedTargetIds(columnId) {
+  return adjacentColumns(columnId).map(c => c.id);
+}
+
+function stageHint(columnId) {
+  const names = adjacentColumns(columnId).map(c => c.name);
+  if (!names.length) return "В проекте нет соседних стадий.";
+  if (names.length === 1) return `Можно перемещать только на соседнюю стадию: ${names[0]}.`;
+  return `Можно перемещать только на соседнюю стадию: ${names[0]} или ${names[1]}.`;
+}
+
+function actorLabel(actor) {
+  const a = String(actor || "system");
+  if (a === "user") return "Пользователь";
+  if (a === "system") return "Система";
+  if (a.startsWith("agent:")) return `Агент: ${a.slice(6)}`;
+  return a;
 }
 
 /* ---------- Projects ---------- */
@@ -218,18 +287,47 @@ function renderBoard() {
       <div class="column-body" data-column-id="${col.id}"></div>
     `;
     const body = colEl.querySelector(".column-body");
-    body.addEventListener("dragover", (e) => { e.preventDefault(); body.classList.add("drag-over"); });
-    body.addEventListener("dragleave", () => body.classList.remove("drag-over"));
+    body.addEventListener("dragover", (e) => {
+      if (draggedTaskId == null) return;
+      const dragged = allTasks.find(t => t.id === draggedTaskId);
+      const targetCol = parseInt(body.dataset.columnId);
+      const valid = dragged && allowedTargetIds(dragged.column_id).includes(targetCol);
+      e.preventDefault();
+      if (valid) {
+        e.dataTransfer.dropEffect = "move";
+        body.classList.add("drag-over");
+        body.classList.remove("drag-invalid");
+      } else {
+        e.dataTransfer.dropEffect = "none";
+        body.classList.add("drag-invalid");
+        body.classList.remove("drag-over");
+      }
+    });
+    body.addEventListener("dragleave", () => {
+      body.classList.remove("drag-over");
+      body.classList.remove("drag-invalid");
+    });
     body.addEventListener("drop", async (e) => {
       e.preventDefault();
       body.classList.remove("drag-over");
+      body.classList.remove("drag-invalid");
       if (draggedTaskId == null) return;
+      const dragged = allTasks.find(t => t.id === draggedTaskId);
       const targetCol = parseInt(body.dataset.columnId);
+      const target = columnById(targetCol);
+      const targetName = target ? target.name : `#${targetCol}`;
+      if (!dragged || !allowedTargetIds(dragged.column_id).includes(targetCol)) {
+        alert(`Нельзя переместить задачу сразу на стадию «${targetName}».\n${dragged ? stageHint(dragged.column_id) : "Обновите доску и попробуйте снова."}`);
+        draggedTaskId = null;
+        clearDropTargets();
+        return;
+      }
       try {
         await api(`/tasks/${draggedTaskId}/move`, { method: "POST", body: JSON.stringify({ column_id: targetCol }) });
         await loadTasks();
       } catch (err) { alert(err.message); }
       draggedTaskId = null;
+      clearDropTargets();
     });
 
     // menu
@@ -272,8 +370,17 @@ function renderBoard() {
         </div>
         <div class="card-comments">💬 ${t.comment_count || 0}</div>
       `;
-      card.addEventListener("dragstart", (e) => { draggedTaskId = t.id; card.classList.add("dragging"); e.dataTransfer.effectAllowed = "move"; });
-      card.addEventListener("dragend", () => { draggedTaskId = null; card.classList.remove("dragging"); });
+      card.addEventListener("dragstart", (e) => {
+        draggedTaskId = t.id;
+        card.classList.add("dragging");
+        e.dataTransfer.effectAllowed = "move";
+        markDropTargets(t);
+      });
+      card.addEventListener("dragend", () => {
+        draggedTaskId = null;
+        card.classList.remove("dragging");
+        clearDropTargets();
+      });
       card.addEventListener("click", () => openTaskModal(t.id));
       body.appendChild(card);
     });
@@ -292,17 +399,95 @@ function renderBoard() {
 
 let draggedTaskId = null;
 
+function markDropTargets(task) {
+  const allowed = allowedTargetIds(task.column_id);
+  $$(".column-body").forEach(body => {
+    const cid = parseInt(body.dataset.columnId);
+    const isAllowed = allowed.includes(cid);
+    body.classList.toggle("drop-allowed", isAllowed);
+    body.classList.toggle("drop-disabled", !isAllowed);
+  });
+}
+
+function clearDropTargets() {
+  $$(".column-body").forEach(body => {
+    body.classList.remove("drop-allowed", "drop-disabled", "drag-over", "drag-invalid");
+  });
+}
+
 function closeMenus() {
   $$(".menu-panel.open").forEach(p => p.classList.remove("open"));
   $$(".ms.open").forEach(m => m.classList.remove("open"));
 }
 
 /* ---------- Task modal ---------- */
+function setTaskTab(tab) {
+  const isDesc = tab === "desc";
+  $("#taskDescPane").style.display = isDesc ? "" : "none";
+  $("#taskHistoryPane").style.display = isDesc ? "none" : "";
+  $("#btnTabDesc").classList.toggle("active", isDesc);
+  $("#btnTabHistory").classList.toggle("active", !isDesc);
+}
+
+function renderStatusButtons(taskColumnId) {
+  const statusList = $("#statusList");
+  statusList.innerHTML = "";
+  statusList.dataset.selected = "";
+
+  const isNew = !taskColumnId;
+  const defaultCol = isNew
+    ? (columns.find(c => c.name === "Backlog") || columns[0])
+    : null;
+  const currentId = isNew ? (defaultCol ? defaultCol.id : null) : taskColumnId;
+  const currentIndex = columnPosition(currentId);
+  const allowed = isNew
+    ? columns.map(c => c.id)
+    : (currentIndex < 0
+        ? []
+        : [columns[currentIndex - 1], columns[currentIndex], columns[currentIndex + 1]]
+            .filter(Boolean)
+            .map(c => c.id));
+
+  columns.forEach(c => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "status-btn";
+    btn.textContent = c.name;
+    btn.dataset.columnId = c.id;
+
+    const enabled = allowed.includes(c.id);
+    const isCurrent = c.id === currentId;
+    btn.disabled = !enabled;
+    if (!enabled) {
+      btn.title = isNew ? "Недоступно" : `Недоступно. ${stageHint(currentId)}`;
+    } else if (!isCurrent && !isNew) {
+      btn.title = `Переместить на соседнюю стадию «${c.name}»`;
+    } else if (isCurrent) {
+      btn.title = "Текущая стадия";
+    }
+
+    if (isCurrent) {
+      btn.classList.add("active");
+      statusList.dataset.selected = c.id;
+    }
+    btn.addEventListener("click", () => {
+      if (btn.disabled) return;
+      statusList.querySelectorAll(".status-btn").forEach(b => b.classList.remove("active"));
+      btn.classList.add("active");
+      statusList.dataset.selected = c.id;
+      dirty = true;
+    });
+    statusList.appendChild(btn);
+  });
+}
+
 async function openTaskModal(taskId) {
   currentTaskId = taskId;
   dirty = false;
+  historyEvents = [];
   $("#taskId").value = taskId ?? "";
   $("#commentsSection").style.display = "none";
+  setTaskTab("desc");
   // Existing tasks open in read/preview mode; new tasks need the editor immediately.
   descMode = taskId ? "preview" : "edit";
   $("#taskDesc").style.display = taskId ? "none" : "";
@@ -314,13 +499,18 @@ async function openTaskModal(taskId) {
     const t = await api(`/tasks/${taskId}`);
     $("#taskTitle").value = t.title;
     $("#taskDesc").value = t.description || "";
-    $("#taskPriority").value = t.priority;
-    $("#taskCategory").value = t.category;
+    setSelectValue($("#taskPriority"), t.priority);
+    setSelectValue($("#taskCategory"), t.category);
     $("#taskAgent").value = t.agent_id || "";
     $("#taskAffectedFiles").value = t.affected_files || "";
     $("#modalTitle").textContent = `Задача #${t.id}`;
     $("#commentsSection").style.display = "block";
-    await loadComments(taskId);
+    $("#taskCreated").textContent = formatDateTime(t.created_at);
+    $("#taskUpdated").textContent = formatDateTime(t.updated_at);
+    $("#taskLastMove").textContent = "—";
+    renderStatusButtons(t.column_id);
+    renderPreview();
+    await Promise.all([loadComments(taskId), loadTaskHistory(taskId)]);
   } else {
     $("#taskTitle").value = "";
     $("#taskDesc").value = "";
@@ -330,41 +520,11 @@ async function openTaskModal(taskId) {
     $("#taskAffectedFiles").value = "";
     $("#modalTitle").textContent = "Новая задача";
     $("#commentsList").innerHTML = "";
-  }
-
-  if (taskId) renderPreview();
-
-  // status list
-  const sel = $("#taskColumn");
-  // we use status buttons
-  const statusList = $("#statusList");
-  statusList.innerHTML = "";
-  columns.forEach(c => {
-    const btn = document.createElement("button");
-    btn.className = "status-btn";
-    btn.textContent = c.name;
-    btn.dataset.columnId = c.id;
-    btn.addEventListener("click", () => {
-      statusList.querySelectorAll(".status-btn").forEach(b => b.classList.remove("active"));
-      btn.classList.add("active");
-      // store selected
-      statusList.dataset.selected = c.id;
-      dirty = true;
-    });
-    statusList.appendChild(btn);
-  });
-  // set active
-  if (taskId) {
-    const t = tasks.find(x => x.id === taskId);
-    if (t) {
-      const btn = statusList.querySelector(`[data-column-id="${t.column_id}"]`);
-      if (btn) { btn.classList.add("active"); statusList.dataset.selected = t.column_id; }
-    }
-  } else {
-    if (columns[0]) {
-      const btn = statusList.querySelector(`[data-column-id="${columns[0].id}"]`);
-      if (btn) { btn.classList.add("active"); statusList.dataset.selected = columns[0].id; }
-    }
+    $("#taskCreated").textContent = "—";
+    $("#taskUpdated").textContent = "—";
+    $("#taskLastMove").textContent = "—";
+    $("#historyList").innerHTML = "<div class='history-empty'>История появится после создания задачи.</div>";
+    renderStatusButtons(null);
   }
 
   $("#taskModal").classList.add("active");
@@ -390,6 +550,110 @@ async function loadComments(taskId) {
     list.appendChild(div);
   });
   if (!comments.length) list.innerHTML = "<div class='muted'>Нет комментариев</div>";
+}
+
+/* ---------- Task history ---------- */
+function historyIcon(action) {
+  return ({ created: "＋", moved: "→", updated: "✎", note: "💬" })[action] || "•";
+}
+
+function historyActionLabel(action) {
+  return ({
+    created: "Создание",
+    moved: "Перемещение",
+    updated: "Изменение",
+    note: "Заметка",
+  })[action] || action;
+}
+
+function parseFieldSnapshot(value) {
+  try {
+    const parsed = JSON.parse(value ?? "null");
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+function shortValue(value, limit = 80) {
+  const s = value === null || value === undefined || value === "" ? "—" : String(value);
+  return s.length > limit ? s.slice(0, limit - 1) + "…" : s;
+}
+
+function historyBody(ev) {
+  if (ev.action === "created") {
+    return ev.new_column_name
+      ? `Задача создана в колонке <span class="col-chip new">${escapeHtml(ev.new_column_name)}</span>`
+      : "Задача создана";
+  }
+  if (ev.action === "moved") {
+    const from = ev.old_column_name || (ev.old_column_id ? `Колонка #${ev.old_column_id}` : "—");
+    const to = ev.new_column_name || (ev.new_column_id ? `Колонка #${ev.new_column_id}` : "—");
+    return `<span class="col-chip">${escapeHtml(from)}</span><span class="history-arrow">→</span><span class="col-chip new">${escapeHtml(to)}</span>`;
+  }
+  if (ev.action === "updated") {
+    const oldVals = parseFieldSnapshot(ev.old_value) || {};
+    const newVals = parseFieldSnapshot(ev.new_value) || {};
+    const keys = Object.keys(newVals);
+    if (!keys.length) return "Поля задачи изменены";
+    if (
+      keys.length === 1 &&
+      String(oldVals[keys[0]] ?? "").length <= 80 &&
+      String(newVals[keys[0]] ?? "").length <= 80
+    ) {
+      const key = keys[0];
+      return `Поле <span class="history-fields">${escapeHtml(key)}</span>: ${escapeHtml(shortValue(oldVals[key]))} <span class="history-arrow">→</span> ${escapeHtml(shortValue(newVals[key]))}`;
+    }
+    return `Изменены поля: <span class="history-fields">${keys.map(escapeHtml).join(", ")}</span>`;
+  }
+  if (ev.action === "note") {
+    return escapeHtml(ev.new_value || ev.note || "Заметка");
+  }
+  return escapeHtml(ev.new_value || ev.action);
+}
+
+function renderHistory() {
+  const box = $("#historyList");
+  if (!historyEvents.length) {
+    box.innerHTML = "<div class='history-empty'>Событий пока нет.</div>";
+    return;
+  }
+  box.innerHTML = "";
+  historyEvents.forEach(ev => {
+    const item = document.createElement("div");
+    item.className = "history-item";
+    const note = (ev.action !== "note" && ev.note) ? ev.note : "";
+    item.innerHTML = `
+      <div class="history-icon action-${escapeHtml(ev.action)}">${historyIcon(ev.action)}</div>
+      <div class="history-content">
+        <div class="history-head">
+          <span class="history-action">${escapeHtml(historyActionLabel(ev.action))}</span>
+          <span class="history-time">${escapeHtml(formatDateTime(ev.created_at))}</span>
+        </div>
+        <div class="history-body">${historyBody(ev)}</div>
+        <div class="history-actor">${escapeHtml(actorLabel(ev.actor))}</div>
+        ${note ? `<div class="history-note">${escapeHtml(note)}</div>` : ""}
+      </div>
+    `;
+    box.appendChild(item);
+  });
+}
+
+async function loadTaskHistory(taskId) {
+  const box = $("#historyList");
+  box.innerHTML = "<div class='history-empty'>Загрузка истории...</div>";
+  try {
+    historyEvents = await api(`/tasks/${taskId}/history?project_id=${currentProjectId}`);
+  } catch (err) {
+    historyEvents = [];
+    box.innerHTML = `<div class='history-empty'>Не удалось загрузить историю: ${escapeHtml(err.message)}</div>`;
+    return;
+  }
+  renderHistory();
+  const moves = historyEvents.filter(e => e.action === "moved");
+  $("#taskLastMove").textContent = moves.length
+    ? formatDateTime(moves[moves.length - 1].created_at)
+    : "—";
 }
 
 function toggleFullscreen(force) {
@@ -486,17 +750,21 @@ async function saveTask() {
   try {
     if (id) {
       await api(`/tasks/${id}`, { method: "PUT", body: JSON.stringify(payload) });
+      dirty = false;
+      await loadTasks();
+      const fresh = await api(`/tasks/${id}`);
+      $("#taskCreated").textContent = formatDateTime(fresh.created_at);
+      $("#taskUpdated").textContent = formatDateTime(fresh.updated_at);
+      renderStatusButtons(fresh.column_id);
+      await loadTaskHistory(id);
     } else {
       const created = await api("/tasks", { method: "POST", body: JSON.stringify({ ...payload, project_id: currentProjectId }) });
-      // switch to edit mode with new id
-      $("#taskId").value = created.id;
-      currentTaskId = created.id;
-      $("#modalTitle").textContent = `Задача #${created.id}`;
-      $("#commentsSection").style.display = "block";
-      await loadComments(created.id);
+      dirty = false;
+      await loadTasks();
+      // Reload the modal as an existing task: comments, history, timestamps,
+      // and the adjacent-stages-only status restriction now apply.
+      await openTaskModal(created.id);
     }
-    dirty = false;
-    await loadTasks();
   } catch (err) { alert(err.message); }
 }
 
@@ -636,6 +904,9 @@ document.addEventListener("DOMContentLoaded", async () => {
   $("#btnSaveTask").addEventListener("click", saveTask);
   $("#btnDeleteTask").addEventListener("click", deleteTask);
   $("#btnFullscreen").addEventListener("click", () => toggleFullscreen());
+
+  $("#btnTabDesc").addEventListener("click", () => setTaskTab("desc"));
+  $("#btnTabHistory").addEventListener("click", () => setTaskTab("history"));
 
   $("#btnEditDesc").addEventListener("click", () => {
     descMode = "edit";

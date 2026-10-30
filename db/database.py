@@ -144,6 +144,7 @@ CREATE TABLE IF NOT EXISTS audit_log (
     old_value TEXT,
     new_value TEXT,
     actor TEXT DEFAULT 'system',
+    note TEXT,
     created_at TEXT NOT NULL
 );
 """
@@ -181,6 +182,9 @@ def migrate(cur, conn):
         "UPDATE tasks SET project_id = ? WHERE project_id IS NULL", (default_pid,)
     )
     cur.execute("UPDATE tasks SET affected_files = '' WHERE affected_files IS NULL")
+
+    # audit_log migration: optional human-readable note / comment
+    _ensure_column(cur, conn, "audit_log", "note", "TEXT")
 
     # comments FK cascade already; nothing
 

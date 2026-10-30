@@ -113,3 +113,26 @@ class Setting(BaseModel):
 
 VALID_PRIORITIES = ["Low", "Medium", "High", "Critical"]
 VALID_CATEGORIES = ["Feature", "Bug", "Rework", "Balance", "Cleanup"]
+
+_PRIORITY_CANONICAL = {p.lower(): p for p in VALID_PRIORITIES}
+_CATEGORY_CANONICAL = {c.lower(): c for c in VALID_CATEGORIES}
+
+
+def normalize_priority(value: Optional[str]) -> Optional[str]:
+    """Map known priorities (case-insensitive) to their canonical spelling.
+
+    Unknown/custom values are preserved as-is.
+    """
+    if not isinstance(value, str):
+        return value
+    return _PRIORITY_CANONICAL.get(value.strip().lower(), value)
+
+
+def normalize_category(value: Optional[str]) -> Optional[str]:
+    """Map known categories (case-insensitive) to their canonical spelling.
+
+    Custom user categories are preserved as-is.
+    """
+    if not isinstance(value, str):
+        return value
+    return _CATEGORY_CANONICAL.get(value.strip().lower(), value)

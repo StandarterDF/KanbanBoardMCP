@@ -2,8 +2,14 @@ import sqlite3
 from datetime import datetime, timezone, timedelta
 from typing import Optional, List, Dict, Any
 from db.database import db_cursor, now, row_to_dict
-from models.schemas import Task, TaskCreate, TaskUpdate
-from services import project_service
+from models.schemas import (
+    Task,
+    TaskCreate,
+    TaskUpdate,
+    normalize_category,
+    normalize_priority,
+)
+from services import project_service, history_service
 
 
 PRIORITY_ORDER = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3}
@@ -36,6 +42,47 @@ def get_column_by_name(
         )
         r = cur.fetchone()
         return row_to_dict(r) if r else None
+
+
+def _stage_navigation(task: Dict[str, Any]) -> Dict[str, Any]:
+    """Return ordered columns plus the position of the task's column.
+
+    Adjacency is based on the actual sorted column list (``order_index, id``),
+    never on numeric id differences, so gaps in ``order_index`` are harmless.
+    """
+    cols = list_columns(task["project_id"])
+    ids = [c["id"] for c in cols]
+    current_id = task["column_id"]
+    index = ids.index(current_id) if current_id in ids else -1
+    previous = cols[index - 1] if index > 0 else None
+    following = cols[index + 1] if 0 <= index < len(cols) - 1 else None
+    return {
+        "columns": cols,
+        "index": index,
+        "current": cols[index] if index >= 0 else None,
+        "previous": previous,
+        "next": following,
+    }
+
+
+def ensure_adjacent_move(task: Dict[str, Any], target_column_id: int) -> None:
+    """Raise ValueError unless ``target_column_id`` is the previous or next stage."""
+    if task["column_id"] == target_column_id:
+        return
+    nav = _stage_navigation(task)
+    if nav["index"] < 0:
+        raise ValueError("Текущая колонка задачи не найдена в проекте")
+    allowed_ids = {c["id"] for c in (nav["previous"], nav["next"]) if c is not None}
+    if target_column_id in allowed_ids:
+        return
+    names = [c["name"] for c in (nav["previous"], nav["next"]) if c]
+    if not names:
+        raise ValueError("Нельзя перемещать задачу: в проекте нет соседних стадий.")
+    if len(names) == 1:
+        raise ValueError(f"Можно перемещать только на соседнюю стадию: {names[0]}.")
+    raise ValueError(
+        f"Можно перемещать только на соседнюю стадию: {names[0]} или {names[1]}."
+    )
 
 
 def get_column_by_id(
@@ -181,6 +228,8 @@ def create_task(
     project_id: Optional[int] = None,
 ) -> Dict[str, Any]:
     pid = _default_project_id(project_id)
+    category = normalize_category(category)
+    priority = normalize_priority(priority)
     if column_id is None:
         col = get_column_by_name("Backlog", pid)
         if col is None:
@@ -212,9 +261,14 @@ def create_task(
             ),
         )
         tid = cur.lastrowid
-        cur.execute(
-            "INSERT INTO audit_log (task_id, action, new_value, actor, created_at) VALUES (?,?,?,?,?)",
-            (tid, "created", f"column_id={column_id}", agent_id or "user", ts),
+        history_service.record_event(
+            tid,
+            "created",
+            old_value=None,
+            new_value=f"column_id={column_id}",
+            actor=agent_id or "user",
+            created_at=ts,
+            cur=cur,
         )
     return get_task(tid)
 
@@ -229,12 +283,14 @@ def update_task(task_id: int, data, actor: str = "user") -> Optional[Dict[str, A
     if getattr(data, "description", None) is not None:
         fields["description"] = data.description
     if getattr(data, "category", None) is not None:
-        fields["category"] = data.category
+        fields["category"] = normalize_category(data.category)
     if getattr(data, "priority", None) is not None:
-        fields["priority"] = data.priority
+        fields["priority"] = normalize_priority(data.priority)
     if getattr(data, "column_id", None) is not None:
         if get_column_by_id(data.column_id, project_id=task["project_id"]) is None:
             raise ValueError("Target column does not belong to the task project")
+        if data.column_id != task["column_id"]:
+            ensure_adjacent_move(task, data.column_id)
         fields["column_id"] = data.column_id
     if getattr(data, "agent_id", None) is not None:
         fields["agent_id"] = data.agent_id
@@ -244,27 +300,44 @@ def update_task(task_id: int, data, actor: str = "user") -> Optional[Dict[str, A
     if not fields:
         return task
     ts = now()
+    changed = {k: v for k, v in fields.items() if task.get(k) != v}
+    if not changed:
+        return task
     sets = ", ".join(f"{k} = ?" for k in fields)
     params = list(fields.values()) + [ts, task_id]
     with db_cursor() as (cur, conn):
-        if "column_id" in fields and fields["column_id"] != task["column_id"]:
-            cur.execute(
-                "INSERT INTO audit_log (task_id, action, old_value, new_value, actor, created_at) VALUES (?,?,?,?,?,?)",
-                (
-                    task_id,
-                    "moved",
-                    str(task["column_id"]),
-                    str(fields["column_id"]),
-                    actor,
-                    ts,
+        if "column_id" in changed:
+            history_service.record_event(
+                task_id,
+                "moved",
+                old_value=str(task["column_id"]),
+                new_value=str(changed["column_id"]),
+                actor=actor,
+                created_at=ts,
+                cur=cur,
+            )
+        field_changes = {k: v for k, v in changed.items() if k != "column_id"}
+        if field_changes:
+            history_service.record_event(
+                task_id,
+                "updated",
+                old_value=history_service.dump_fields(
+                    {k: task.get(k) for k in field_changes}
                 ),
+                new_value=history_service.dump_fields(field_changes),
+                actor=actor,
+                created_at=ts,
+                cur=cur,
             )
         cur.execute(f"UPDATE tasks SET {sets}, updated_at = ? WHERE id = ?", params)
     return get_task(task_id)
 
 
 def move_task(
-    task_id: int, target_column_id: int, actor: str = "user"
+    task_id: int,
+    target_column_id: int,
+    actor: str = "user",
+    note: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     task = get_task(task_id)
     if not task:
@@ -273,18 +346,18 @@ def move_task(
         raise ValueError("Target column does not belong to the task project")
     if task["column_id"] == target_column_id:
         return task
+    ensure_adjacent_move(task, target_column_id)
     ts = now()
     with db_cursor() as (cur, conn):
-        cur.execute(
-            "INSERT INTO audit_log (task_id, action, old_value, new_value, actor, created_at) VALUES (?,?,?,?,?,?)",
-            (
-                task_id,
-                "moved",
-                str(task["column_id"]),
-                str(target_column_id),
-                actor,
-                ts,
-            ),
+        history_service.record_event(
+            task_id,
+            "moved",
+            old_value=str(task["column_id"]),
+            new_value=str(target_column_id),
+            actor=actor,
+            note=note or None,
+            created_at=ts,
+            cur=cur,
         )
         cur.execute(
             "UPDATE tasks SET column_id = ?, updated_at = ? WHERE id = ?",

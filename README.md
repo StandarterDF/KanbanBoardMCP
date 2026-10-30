@@ -46,6 +46,20 @@ python -m venv .venv
 
 Для другого проекта измените query-параметр `project=<slug>`. Slug проекта виден в `GET /api/projects`; у нового проекта автоматически создаются стандартные стадии (Backlog, In Progress, Implemented, Tested, Committed).
 
+## Стадии, история и MCP
+
+- Задачу можно переместить только на соседнюю стадию (предыдущую или следующую в
+  порядке `order_index, id`). Ограничение действует и в UI (drag-and-drop / кнопки
+  статуса), и в `POST /api/tasks/{id}/move`, `PUT /api/tasks/{id}`, и в MCP.
+- `GET /api/tasks/{task_id}/history` возвращает таймлайн задачи: создание,
+  перемещения, изменения полей и заметки. Названия колонок подставляются, даже
+  если в `audit_log` сохранены только id (для удалённых колонок — fallback).
+- MCP-инструмент `request_move_task` принимает необязательный `reason`. При
+  успешном перемещении агент автоматически добавляет комментарий от
+  `Agent:<agent_id>`, а причина сохраняется в истории.
+- MCP-инструмент `get_task_history(task_id, project=None)` возвращает те же
+  события истории.
+
 Fallback (stdio, проект по умолчанию или env `KANBAN_PROJECT`):
 
 ```json

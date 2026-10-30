@@ -56,19 +56,31 @@
       <input type="hidden" id="taskId" />
       <div class="task-main">
         <input type="text" id="taskTitle" class="task-title-input" placeholder="Название задачи" />
-        <div class="desc-toolbar">
-          <button class="tab active" id="btnEditDesc" type="button">Редактировать</button>
-          <button class="tab" id="btnPreviewDesc" type="button">Предпросмотр</button>
+
+        <div class="modal-tabs">
+          <button class="modal-tab active" id="btnTabDesc" type="button">Описание</button>
+          <button class="modal-tab" id="btnTabHistory" type="button">История</button>
         </div>
-        <textarea id="taskDesc" rows="8" placeholder="Описание / критерии приёмки (Markdown)"></textarea>
-        <div id="taskDescPreview" class="markdown-body" style="display:none"></div>
-        <div class="comments-section" id="commentsSection" style="display:none">
-          <h3>Комментарии</h3>
-          <div class="comments-list" id="commentsList"></div>
-          <div class="comment-form">
-            <input type="text" id="commentText" placeholder="Написать комментарий...">
-            <button class="btn btn-primary" id="btnAddComment">Отправить</button>
+
+        <div class="task-pane" id="taskDescPane">
+          <div class="desc-toolbar">
+            <button class="tab active" id="btnEditDesc" type="button">Редактировать</button>
+            <button class="tab" id="btnPreviewDesc" type="button">Предпросмотр</button>
           </div>
+          <textarea id="taskDesc" rows="8" placeholder="Описание / критерии приёмки (Markdown)"></textarea>
+          <div id="taskDescPreview" class="markdown-body" style="display:none"></div>
+          <div class="comments-section" id="commentsSection" style="display:none">
+            <h3>Комментарии</h3>
+            <div class="comments-list" id="commentsList"></div>
+            <div class="comment-form">
+              <input type="text" id="commentText" placeholder="Написать комментарий...">
+              <button class="btn btn-primary" id="btnAddComment">Отправить</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="task-pane" id="taskHistoryPane" style="display:none">
+          <div class="history-timeline" id="historyList"></div>
         </div>
       </div>
       <aside class="task-sidebar">
@@ -95,6 +107,14 @@
         <div class="side-card">
           <label>Затронутые файлы</label>
           <textarea id="taskAffectedFiles" rows="4" placeholder="path/to/file.py, ..."></textarea>
+        </div>
+        <div class="side-card meta-card">
+          <label>Создано</label>
+          <div class="time-value" id="taskCreated">—</div>
+          <label>Обновлено</label>
+          <div class="time-value" id="taskUpdated">—</div>
+          <label>Последнее перемещение</label>
+          <div class="time-value" id="taskLastMove">—</div>
         </div>
       </aside>
     </div>

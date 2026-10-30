@@ -18,6 +18,7 @@ from services import (
     settings_service,
     agent_service,
     project_service,
+    history_service,
 )
 
 router = APIRouter(prefix="/api")
@@ -202,6 +203,16 @@ def move_task(task_id: int, payload: MoveRequest):
     if not t:
         raise HTTPException(status_code=404, detail="Task not found")
     return t
+
+
+@router.get("/tasks/{task_id}/history")
+def get_task_history(task_id: int, project_id: Optional[int] = Query(None)):
+    t = task_service.get_task(task_id)
+    if not t:
+        raise HTTPException(status_code=404, detail="Task not found")
+    if project_id is not None and t.get("project_id") != project_id:
+        raise HTTPException(status_code=404, detail="Task not found in project")
+    return history_service.get_task_history(task_id)
 
 
 @router.get("/tasks/{task_id}/comments")

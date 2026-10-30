@@ -12,6 +12,7 @@ from services import (
     settings_service,
     agent_service,
     project_service,
+    history_service,
 )
 
 mcp = FastMCP(name="KanbanBoardMCP", instructions="Local Kanban task board MCP server.")
@@ -180,9 +181,15 @@ def request_move_task(
     task_id: int,
     target_column: str,
     user_explicitly_approved: bool = False,
+    reason: str = "",
     project: Optional[str] = None,
 ) -> dict:
-    """Move a task to another column with movement guard."""
+    """Move a task to an adjacent column only.
+
+    Adjacent means the previous or next stage in the project's ordered column
+    list. ``reason`` is optional and, when the move succeeds, is used in an
+    automatic agent comment and stored in the task history.
+    """
     proj, err = _resolve_project(project)
     if err:
         return {"error": err}
@@ -205,8 +212,50 @@ def request_move_task(
             "message": f"Требуется подтверждение владельца. Задай пользователю вопрос: 'Я завершил работу над задачей #{task_id} ({t['title']}). Переместить её в колонку {col_name}?'",
         }
 
+    reason = (reason or "").strip()
+    old_col = task_service.get_column_by_id(t["column_id"], project_id=proj["id"])
+    old_name = old_col["name"] if old_col else f"Колонка #{t['column_id']}"
+
     try:
-        updated = task_service.move_task(task_id, cid, actor=f"agent:{agent_id}")
+        updated = task_service.move_task(
+            task_id, cid, actor=f"agent:{agent_id}", note=reason or None
+        )
     except ValueError as e:
         return {"error": str(e)}
-    return {"status": "moved", "task": updated}
+
+    moved = bool(updated and updated["column_id"] == cid and t["column_id"] != cid)
+    if moved:
+        clean_reason = reason.rstrip(" .!?;:,")
+        if clean_reason:
+            comment_text = (
+                f"Я переместил эту задачу из «{old_name}» в «{col_name}», "
+                f"так как {clean_reason}."
+            )
+        else:
+            comment_text = f"Я переместил эту задачу из «{old_name}» в «{col_name}»."
+        comment_service.add_comment(task_id, f"Agent:{agent_id}", comment_text)
+        history_service.record_event(
+            task_id,
+            "note",
+            old_value=None,
+            new_value=comment_text,
+            actor=f"agent:{agent_id}",
+            note=reason or None,
+        )
+        updated = task_service.get_task(task_id)
+
+    return {"status": "moved" if moved else "unchanged", "task": updated}
+
+
+@mcp.tool
+def get_task_history(task_id: int, project: Optional[str] = None) -> List[dict]:
+    """Return the chronological audit history of a task in the current project."""
+    proj, err = _resolve_project(project)
+    if err:
+        return [{"error": err}]
+    t = task_service.get_task(task_id)
+    if not t:
+        return [{"error": f"Task {task_id} not found"}]
+    if t.get("project_id") != proj["id"]:
+        return [{"error": f"Task {task_id} not in project {proj['slug']}"}]
+    return history_service.get_task_history(task_id)
