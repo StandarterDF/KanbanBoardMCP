@@ -807,22 +807,12 @@ async function saveTask() {
       await api(`/tasks/${id}`, { method: "PUT", body: JSON.stringify(payload) });
       dirty = false;
       await loadTasks();
-      // Reload the same task in-place. This keeps the modal open, refreshes
-      // timestamps/history/status buttons and cannot be affected by stale DOM.
-      await openTaskModal(id);
-      showSaveStatus("Сохранено");
+      closeModal();
     } else {
-      const created = await api("/tasks", { method: "POST", body: JSON.stringify({ ...payload, project_id: currentProjectId }) });
+      await api("/tasks", { method: "POST", body: JSON.stringify({ ...payload, project_id: currentProjectId }) });
       dirty = false;
       await loadTasks();
-      // Reload the modal as an existing task: comments, history, timestamps,
-      // and the adjacent-stages-only status restriction now apply.
-      await openTaskModal(created.id);
-      $("#taskId").value = created.id;
-      $("#taskPublicId").value = created.id;
-      $("#btnCopyTaskId").disabled = false;
-      $("#taskModal").classList.add("active");
-      showSaveStatus("Сохранено");
+      closeModal();
     }
   } catch (err) { alert(err.message); }
 }
