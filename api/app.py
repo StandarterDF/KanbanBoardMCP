@@ -14,7 +14,10 @@ STATIC_DIR = os.path.join(BASE_DIR, "static")
 
 def create_app() -> FastAPI:
     try:
-        mcp_app = mcp.http_app(path="/")
+        # Stateless Streamable HTTP: each request is independent, so restarting
+        # the web server does not leave clients with an invalid MCP session id.
+        # OpenCode/Cursor can reconnect without "Session not found" errors.
+        mcp_app = mcp.http_app(path="/", stateless_http=True)
     except Exception:
         mcp_app = None
 
