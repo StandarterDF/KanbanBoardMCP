@@ -366,6 +366,23 @@ function populateCategorySelect(selected, allowLegacy) {
   if (!sel.value && sel.options.length) sel.selectedIndex = 0;
 }
 
+function populateBoardSelect(selected) {
+  const sel = $("#taskBoard");
+  sel.innerHTML = "";
+  boards.forEach(board => {
+    const opt = document.createElement("option");
+    opt.value = board.id;
+    opt.textContent = board.name;
+    sel.appendChild(opt);
+  });
+  const desired = selected ?? currentBoardId;
+  if (desired != null) {
+    const match = Array.from(sel.options).find(opt => parseInt(opt.value, 10) === desired);
+    if (match) sel.value = match.value;
+  }
+  if (!sel.value && sel.options.length) sel.selectedIndex = 0;
+}
+
 function columnHasTasks(colId) {
   return allTasks.some(t => t.column_id === colId);
 }
@@ -713,6 +730,7 @@ async function openTaskModal(taskId) {
     $("#taskDesc").value = t.description || "";
     setSelectValue($("#taskPriority"), t.priority);
     populateCategorySelect(t.category, true);
+    populateBoardSelect(t.board_id);
     $("#taskAgent").value = t.agent_id || "";
     $("#taskAffectedFiles").value = t.affected_files || "";
     $("#modalTitle").textContent = `Задача #${t.id}`;
@@ -732,6 +750,7 @@ async function openTaskModal(taskId) {
     $("#taskDesc").value = "";
     $("#taskPriority").value = "Medium";
     populateCategorySelect(null, false);
+    populateBoardSelect(currentBoardId);
     $("#taskAgent").value = "";
     $("#taskAffectedFiles").value = "";
     $("#modalTitle").textContent = "Новая задача";
@@ -882,7 +901,7 @@ function toggleFullscreen(force) {
 }
 
 function trackDirty() {
-  const fields = ["#taskTitle","#taskDesc","#taskPriority","#taskCategory","#taskAgent","#taskAffectedFiles"];
+  const fields = ["#taskTitle","#taskDesc","#taskPriority","#taskCategory","#taskBoard","#taskAgent","#taskAffectedFiles"];
   fields.forEach(sel => {
     const el = $(sel);
     el.addEventListener("input", () => { dirty = true; }, { once: false });
@@ -962,6 +981,7 @@ async function saveTask() {
     description: $("#taskDesc").value,
     priority: $("#taskPriority").value,
     category: $("#taskCategory").value,
+    board_id: parseInt($("#taskBoard").value, 10) || currentBoardId,
     column_id: columnId,
     agent_id: $("#taskAgent").value.trim() || null,
     affected_files: $("#taskAffectedFiles").value,
@@ -972,11 +992,13 @@ async function saveTask() {
       await api(`/tasks/${id}`, { method: "PUT", body: JSON.stringify(payload) });
       dirty = false;
       await loadTasks();
+      await loadBoards();
       closeModal();
     } else {
-      await api("/tasks", { method: "POST", body: JSON.stringify({ ...payload, project_id: currentProjectId, board_id: currentBoardId }) });
+      await api("/tasks", { method: "POST", body: JSON.stringify({ ...payload, project_id: currentProjectId }) });
       dirty = false;
       await loadTasks();
+      await loadBoards();
       closeModal();
     }
   } catch (err) { alert(err.message); }

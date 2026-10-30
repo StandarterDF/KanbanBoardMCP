@@ -42,7 +42,8 @@ Typical flow:
 - get_categories to inspect the project's categories;
 - get_tasks / get_task to read tasks (get_tasks accepts `board`);
 - create_task to add tasks to Backlog on the selected board;
-- update_task for title/description/category/priority/affected_files;
+- update_task for title/description/category/priority/affected_files/board;
+- move_task_to_board to move a task between boards of the same project;
 - add_comment_to_task for progress notes;
 - get_task_history to inspect the timeline;
 - request_move_task to move a task. The server enforces adjacent stages only
@@ -255,12 +256,14 @@ def update_task(
     category: Optional[str] = None,
     priority: Optional[str] = None,
     affected_files: Optional[str] = None,
+    board: Optional[str] = None,
     project: Optional[str] = None,
 ) -> dict:
     """Update task fields. Status changes must go through request_move_task.
 
     Category is optional, but when supplied it MUST be one of the project's
     categories (see get_categories); a foreign or unknown category is rejected.
+    ``board`` (id or name) moves the task to another board of the same project.
     """
     proj, err = _resolve_project(project)
     if err:
@@ -270,6 +273,12 @@ def update_task(
         return {"error": f"Task {task_id} not found"}
     if t.get("project_id") != proj["id"]:
         return {"error": f"Task {task_id} not in project {proj['slug']}"}
+    board_id = None
+    if board is not None:
+        brd, err = _resolve_board(proj, board)
+        if err:
+            return {"error": err}
+        board_id = brd["id"]
     agent_service.touch_agent(agent_id)
     try:
         updated = task_service.update_task(
@@ -280,6 +289,7 @@ def update_task(
                 category=category,
                 priority=priority,
                 affected_files=affected_files,
+                board_id=board_id,
             ),
             actor=f"agent:{agent_id}",
         )
@@ -288,6 +298,41 @@ def update_task(
     if updated:
         updated["project"] = proj["slug"]
     return updated
+
+
+@mcp.tool
+def move_task_to_board(
+    agent_id: str,
+    task_id: int,
+    target_board: str,
+    project: Optional[str] = None,
+) -> dict:
+    """Move a task to another board of the same project.
+
+    Columns/categories are shared by boards, so the task keeps its status and
+    category. Use this when the user wants to reorganize tasks between boards.
+    """
+    proj, err = _resolve_project(project)
+    if err:
+        return {"error": err}
+    t = task_service.get_task(task_id)
+    if not t:
+        return {"error": f"Task {task_id} not found"}
+    if t.get("project_id") != proj["id"]:
+        return {"error": f"Task {task_id} not in project {proj['slug']}"}
+    brd, err = _resolve_board(proj, target_board)
+    if err:
+        return {"error": err}
+    agent_service.touch_agent(agent_id)
+    try:
+        updated = task_service.update_task(
+            task_id, TaskUpdate(board_id=brd["id"]), actor=f"agent:{agent_id}"
+        )
+    except ValueError as e:
+        return {"error": str(e)}
+    if updated:
+        updated["project"] = proj["slug"]
+    return {"status": "moved", "task": updated}
 
 
 @mcp.tool

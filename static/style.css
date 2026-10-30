@@ -28,6 +28,10 @@ body {
   color: var(--text);
   font-size: 14px;
   -webkit-font-smoothing: antialiased;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 
 /* Topbar */
@@ -38,9 +42,9 @@ body {
   padding: 12px 20px;
   background: var(--panel);
   border-bottom: 1px solid var(--border);
-  position: sticky;
-  top: 0;
+  position: relative;
   z-index: 5;
+  flex: 0 0 auto;
   flex-wrap: wrap;
 }
 .topbar-left { display: flex; align-items: center; gap: 14px; }
@@ -68,6 +72,7 @@ body {
   background: var(--bg-elev);
   border-bottom: 1px solid var(--border);
   overflow-x: auto;
+  flex: 0 0 auto;
 }
 .board-tabs { display: flex; align-items: center; gap: 8px; flex-wrap: nowrap; }
 .board-tab {
@@ -163,17 +168,19 @@ body {
 /* Board */
 .board {
   display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
   gap: 14px;
   padding: 16px 20px;
   overflow-x: auto;
-  min-height: calc(100vh - 107px);
   align-items: stretch;
 }
 .column {
   flex: 1 1 0;
   min-width: 300px;
-  height: calc(100vh - 139px);
-  max-height: calc(100vh - 139px);
+  height: auto;
+  max-height: none;
+  min-height: 0;
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: var(--radius);
