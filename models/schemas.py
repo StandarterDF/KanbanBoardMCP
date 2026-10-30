@@ -22,6 +22,26 @@ class ProjectUpdate(BaseModel):
     description: Optional[str] = None
 
 
+class Board(BaseModel):
+    id: int
+    project_id: int
+    name: str
+    is_default: int = 0
+    order_index: int = 0
+    created_at: str
+    task_count: int = 0
+
+
+class BoardCreate(BaseModel):
+    name: str
+    project_id: Optional[int] = None
+
+
+class BoardUpdate(BaseModel):
+    name: Optional[str] = None
+    order_index: Optional[int] = None
+
+
 class Column(BaseModel):
     id: int
     project_id: Optional[int] = None
@@ -52,6 +72,7 @@ class TaskCreate(BaseModel):
     agent_id: Optional[str] = None
     affected_files: str = ""
     project_id: Optional[int] = None
+    board_id: Optional[int] = None
 
 
 class TaskUpdate(BaseModel):
@@ -62,6 +83,7 @@ class TaskUpdate(BaseModel):
     column_id: Optional[int] = None
     agent_id: Optional[str] = None
     affected_files: Optional[str] = None
+    board_id: Optional[int] = None
 
 
 class Category(BaseModel):
@@ -89,6 +111,8 @@ class CategoryUpdate(BaseModel):
 class Task(BaseModel):
     id: int
     project_id: Optional[int] = None
+    board_id: Optional[int] = None
+    board_name: Optional[str] = None
     title: str
     description: str
     category: str

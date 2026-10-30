@@ -6,6 +6,7 @@ from db.database import (
     row_to_dict,
     create_default_columns,
     create_default_categories,
+    create_default_board,
 )
 
 
@@ -103,6 +104,7 @@ def create_project(
         pid = cur.lastrowid
         create_default_columns(cur, pid)
         create_default_categories(cur, pid)
+        create_default_board(cur, pid)
     return get_project(pid)
 
 
@@ -147,6 +149,7 @@ def delete_project(project_id: int) -> bool:
             (project_id,),
         )
         cur.execute("DELETE FROM tasks WHERE project_id = ?", (project_id,))
+        cur.execute("DELETE FROM boards WHERE project_id = ?", (project_id,))
         cur.execute("DELETE FROM columns WHERE project_id = ?", (project_id,))
         cur.execute("DELETE FROM categories WHERE project_id = ?", (project_id,))
         cur.execute("DELETE FROM projects WHERE id = ?", (project_id,))

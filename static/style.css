@@ -59,6 +59,67 @@ body {
 .topbar-filters { display: flex; gap: 8px; }
 .topbar-actions { display: flex; gap: 8px; margin-left: auto; }
 
+/* Boards bar */
+.boards-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 20px;
+  background: var(--bg-elev);
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+}
+.board-tabs { display: flex; align-items: center; gap: 8px; flex-wrap: nowrap; }
+.board-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background .15s, border-color .15s, color .15s;
+}
+.board-tab:hover { background: var(--card-hover); color: var(--text); }
+.board-tab.active {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--text-strong);
+}
+.board-tab-count {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--card-hover);
+  border: 1px solid var(--border);
+  color: var(--muted);
+}
+.board-tab.active .board-tab-count {
+  background: rgba(91, 140, 255, 0.2);
+  border-color: transparent;
+  color: var(--text-strong);
+}
+.board-tab-action {
+  background: none;
+  border: none;
+  color: inherit;
+  opacity: 0.65;
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1;
+  padding: 2px 3px;
+  border-radius: 4px;
+}
+.board-tab-action:hover { opacity: 1; background: rgba(255, 255, 255, 0.08); }
+.board-tab-action.danger:hover { color: var(--danger); }
+.boards-add { flex-shrink: 0; padding: 5px 10px; font-size: 13px; }
+
 /* Buttons */
 .btn {
   border: 1px solid var(--border);
@@ -105,14 +166,14 @@ body {
   gap: 14px;
   padding: 16px 20px;
   overflow-x: auto;
-  min-height: calc(100vh - 61px);
+  min-height: calc(100vh - 107px);
   align-items: stretch;
 }
 .column {
   flex: 1 1 0;
   min-width: 300px;
-  height: calc(100vh - 93px);
-  max-height: calc(100vh - 93px);
+  height: calc(100vh - 139px);
+  max-height: calc(100vh - 139px);
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: var(--radius);

@@ -13,6 +13,8 @@ from models.schemas import (
     ColumnUpdate,
     CategoryCreate,
     CategoryUpdate,
+    BoardCreate,
+    BoardUpdate,
 )
 from services import (
     task_service,
@@ -22,6 +24,7 @@ from services import (
     project_service,
     history_service,
     category_service,
+    boards_service,
 )
 
 router = APIRouter(prefix="/api")
@@ -83,6 +86,46 @@ def delete_project(project_id: int):
     ok = project_service.delete_project(project_id)
     if not ok:
         raise HTTPException(status_code=404, detail="Project not found")
+    return {"deleted": True}
+
+
+# ---------- Boards ----------
+@router.get("/boards")
+def get_boards(project_id: Optional[int] = Query(None)):
+    pid = _default_project_id(project_id)
+    return boards_service.list_boards(project_id=pid)
+
+
+@router.post("/boards")
+def create_board(payload: BoardCreate):
+    pid = _default_project_id(payload.project_id)
+    try:
+        return boards_service.create_board(pid, payload.name)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.put("/boards/{board_id}")
+def update_board(board_id: int, payload: BoardUpdate):
+    try:
+        board = boards_service.update_board(
+            board_id, name=payload.name, order_index=payload.order_index
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if not board:
+        raise HTTPException(status_code=404, detail="Board not found")
+    return board
+
+
+@router.delete("/boards/{board_id}")
+def delete_board(board_id: int):
+    try:
+        ok = boards_service.delete_board(board_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if not ok:
+        raise HTTPException(status_code=404, detail="Board not found")
     return {"deleted": True}
 
 
@@ -187,8 +230,15 @@ def get_tasks(
     priorities: Optional[List[str]] = Query(None),
     categories: Optional[List[str]] = Query(None),
     q: Optional[str] = None,
+    board_id: Optional[int] = Query(None),
 ):
     pid = _default_project_id(project_id)
+    if board_id is not None:
+        board = boards_service.get_board(board_id)
+        if board is None or board["project_id"] != pid:
+            raise HTTPException(
+                status_code=400, detail="Board does not belong to project"
+            )
     return task_service.list_tasks(
         project_id=pid,
         column_id=column_id,
@@ -197,6 +247,7 @@ def get_tasks(
         priorities=priorities,
         categories=categories,
         q=q,
+        board_id=board_id,
     )
 
 
@@ -221,6 +272,7 @@ def create_task(payload: TaskCreate):
             agent_id=payload.agent_id,
             affected_files=payload.affected_files,
             project_id=pid,
+            board_id=payload.board_id,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

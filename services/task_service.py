@@ -8,7 +8,7 @@ from models.schemas import (
     TaskUpdate,
     normalize_priority,
 )
-from services import project_service, history_service, category_service
+from services import project_service, history_service, category_service, boards_service
 
 
 PRIORITY_ORDER = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3}
@@ -165,16 +165,22 @@ def list_tasks(
     priorities: Optional[List[str]] = None,
     categories: Optional[List[str]] = None,
     q: Optional[str] = None,
+    board_id: Optional[int] = None,
 ) -> List[Dict[str, Any]]:
     pid = _default_project_id(project_id)
     with db_cursor() as (cur, conn):
         sql = """
-            SELECT t.*, c.name AS column_name,
+            SELECT t.*, c.name AS column_name, b.name AS board_name,
                    (SELECT COUNT(*) FROM comments cm WHERE cm.task_id = t.id) AS comment_count
-            FROM tasks t LEFT JOIN columns c ON c.id = t.column_id
+            FROM tasks t
+            LEFT JOIN columns c ON c.id = t.column_id
+            LEFT JOIN boards b ON b.id = t.board_id
             WHERE t.project_id = ?
         """
         params: list = [pid]
+        if board_id is not None:
+            sql += " AND t.board_id = ?"
+            params.append(board_id)
         if column_id is not None:
             sql += " AND t.column_id = ?"
             params.append(column_id)
@@ -205,9 +211,11 @@ def get_task(task_id: int) -> Optional[Dict[str, Any]]:
     with db_cursor() as (cur, conn):
         cur.execute(
             """
-            SELECT t.*, c.name AS column_name,
+            SELECT t.*, c.name AS column_name, b.name AS board_name,
                    (SELECT COUNT(*) FROM comments cm WHERE cm.task_id = t.id) AS comment_count
-            FROM tasks t LEFT JOIN columns c ON c.id = t.column_id
+            FROM tasks t
+            LEFT JOIN columns c ON c.id = t.column_id
+            LEFT JOIN boards b ON b.id = t.board_id
             WHERE t.id = ?
         """,
             (task_id,),
@@ -225,10 +233,20 @@ def create_task(
     agent_id: Optional[str] = None,
     affected_files: str = "",
     project_id: Optional[int] = None,
+    board_id: Optional[int] = None,
 ) -> Dict[str, Any]:
     pid = _default_project_id(project_id)
     category = category_service.resolve_category(pid, category)
     priority = normalize_priority(priority)
+    if board_id is None:
+        board = boards_service.get_default_board(pid)
+        if board is None:
+            raise ValueError(f"Project {pid} has no boards")
+        board_id = board["id"]
+    else:
+        board = boards_service.get_board(board_id)
+        if board is None or board["project_id"] != pid:
+            raise ValueError(f"Board {board_id} does not belong to project {pid}")
     if column_id is None:
         col = get_column_by_name("Backlog", pid)
         if col is None:
@@ -243,11 +261,12 @@ def create_task(
     with db_cursor() as (cur, conn):
         cur.execute(
             """
-            INSERT INTO tasks (project_id, title, description, category, priority, column_id, agent_id, affected_files, created_at, updated_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?)
+            INSERT INTO tasks (project_id, board_id, title, description, category, priority, column_id, agent_id, affected_files, created_at, updated_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?)
         """,
             (
                 pid,
+                board_id,
                 title,
                 description,
                 category,
@@ -298,6 +317,12 @@ def update_task(task_id: int, data, actor: str = "user") -> Optional[Dict[str, A
     af = getattr(data, "affected_files", None)
     if af is not None:
         fields["affected_files"] = af
+    board_id = getattr(data, "board_id", None)
+    if board_id is not None:
+        board = boards_service.get_board(board_id)
+        if board is None or board["project_id"] != task["project_id"]:
+            raise ValueError("Target board does not belong to the task project")
+        fields["board_id"] = board_id
     if not fields:
         return task
     ts = now()

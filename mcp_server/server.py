@@ -15,6 +15,7 @@ from services import (
     project_service,
     history_service,
     category_service,
+    boards_service,
 )
 
 MCP_INSTRUCTIONS = """
@@ -23,7 +24,11 @@ Local Kanban task-board MCP server.
 IMPORTANT: use these MCP tools directly for all board operations. Do NOT call
 the REST API (/api/..., /openapi.json) and do NOT use fetch/webfetch or HTTP
 requests to read or modify tasks. The project is already selected by the MCP
-URL query parameter `?project=<slug>`; never guess a project id.
+URL query parameter `?project=<slug>`; never guess a project id. A project can
+have several boards; the main board is used by default. The optional
+`?board=<id or name>` query parameter (or the `board` argument of a tool)
+selects another board. Boards only filter tasks: columns and categories stay
+project-wide.
 
 Categories are project-scoped. Before creating a task call get_categories (or
 get_board) and use one of the category names returned for that project. A task
@@ -32,10 +37,11 @@ project.
 
 Typical flow:
 - register_agent once per session;
-- get_board or get_columns to inspect the board;
+- get_boards to inspect the project's boards;
+- get_board or get_columns to inspect the board (get_board accepts `board`);
 - get_categories to inspect the project's categories;
-- get_tasks / get_task to read tasks;
-- create_task to add tasks to Backlog;
+- get_tasks / get_task to read tasks (get_tasks accepts `board`);
+- create_task to add tasks to Backlog on the selected board;
 - update_task for title/description/category/priority/affected_files;
 - add_comment_to_task for progress notes;
 - get_task_history to inspect the timeline;
@@ -63,6 +69,21 @@ def _resolve_project(override: Optional[str] = None) -> (Dict[str, Any], Optiona
     if not proj:
         return None, f"Project not found: {slug}"
     return proj, None
+
+
+def _resolve_board(proj: Dict[str, Any], board: Optional[str] = None):
+    """Resolve a board reference (id, name, URL ``?board=`` or default board)."""
+    target = board
+    if target is None or str(target).strip() == "":
+        try:
+            req = get_http_request()
+            target = req.query_params.get("board")
+        except Exception:
+            target = os.environ.get("KANBAN_BOARD")
+    resolved = boards_service.resolve_board(proj["id"], target)
+    if resolved is None:
+        return None, f"Board not found in project {proj['slug']}: {target}"
+    return resolved, None
 
 
 def _col_id(target, project_id: int) -> Optional[int]:
@@ -100,9 +121,18 @@ def get_tasks(
     column_id: Optional[str] = None,
     priority: Optional[str] = None,
     project: Optional[str] = None,
+    board: Optional[str] = None,
 ) -> List[dict]:
-    """Get tasks with optional filters. column_id can be id or name. Project from URL/env/default."""
+    """Get tasks of one board with optional filters.
+
+    ``column_id`` can be id or name. ``board`` can be an id or name; when it is
+    omitted the URL ``?board=`` parameter is used, then the main board. Tasks
+    from other boards are never returned.
+    """
     proj, err = _resolve_project(project)
+    if err:
+        return [{"error": err}]
+    brd, err = _resolve_board(proj, board)
     if err:
         return [{"error": err}]
     agent_service.touch_agent(agent_id) if agent_id else None
@@ -112,7 +142,11 @@ def get_tasks(
         if cid is None:
             return [{"error": f"Unknown column: {column_id}"}]
     tasks = task_service.list_tasks(
-        project_id=proj["id"], column_id=cid, agent_id=agent_id, priority=priority
+        project_id=proj["id"],
+        column_id=cid,
+        agent_id=agent_id,
+        priority=priority,
+        board_id=brd["id"],
     )
     out = []
     for t in tasks:
@@ -120,6 +154,7 @@ def get_tasks(
         t = dict(t)
         t["comment_count"] = len(comments)
         t["project"] = proj["slug"]
+        t["board"] = brd["name"]
         out.append(t)
     return out
 
@@ -147,20 +182,40 @@ def get_categories(project: Optional[str] = None) -> List[dict]:
 
 
 @mcp.tool
-def get_board(project: Optional[str] = None) -> dict:
-    """Return project info, ordered columns, categories and all tasks in one call.
+def get_boards(project: Optional[str] = None) -> List[dict]:
+    """Return all boards of the current project with their task counts.
 
-    Use this instead of fetching the REST API when you need the full board.
+    The main board has ``is_default=1``. Use a board id or name as the ``board``
+    argument of get_tasks/get_board/create_task to work with another board.
+    """
+    proj, err = _resolve_project(project)
+    if err:
+        return [{"error": err}]
+    return boards_service.list_boards(proj["id"])
+
+
+@mcp.tool
+def get_board(project: Optional[str] = None, board: Optional[str] = None) -> dict:
+    """Return project info, the selected board, columns, categories and tasks.
+
+    ``board`` can be an id or name; when omitted the URL ``?board=`` parameter
+    is used, then the main board. Tasks of other boards are not included. Use
+    this instead of fetching the REST API when you need the full board.
     """
     proj, err = _resolve_project(project)
     if err:
         return {"error": err}
+    brd, err = _resolve_board(proj, board)
+    if err:
+        return {"error": err}
     cols = task_service.list_columns(project_id=proj["id"])
     cats = category_service.list_categories(project_id=proj["id"])
-    tasks = task_service.list_tasks(project_id=proj["id"])
+    boards = boards_service.list_boards(proj["id"])
+    tasks = task_service.list_tasks(project_id=proj["id"], board_id=brd["id"])
     for t in tasks:
         t["comment_count"] = len(comment_service.list_comments(t["id"]))
         t["project"] = proj["slug"]
+        t["board"] = brd["name"]
     return {
         "project": {
             "id": proj["id"],
@@ -168,6 +223,8 @@ def get_board(project: Optional[str] = None) -> dict:
             "slug": proj["slug"],
             "description": proj.get("description", ""),
         },
+        "board": brd,
+        "boards": boards,
         "columns": cols,
         "categories": cats,
         "tasks": tasks,
@@ -243,14 +300,21 @@ def create_task(
     affected_files: Optional[str] = "",
     column_id: Optional[str] = None,
     project: Optional[str] = None,
+    board: Optional[str] = None,
 ) -> dict:
-    """Create a structured task in the current project.
+    """Create a structured task on the selected board of the current project.
 
     ``category`` is required and MUST be one of the names returned by
     get_categories for this project (defaults: Feature, Bug, Rework, Balance,
     Cleanup). An unknown or foreign category is rejected.
+
+    ``board`` can be an id or name; when omitted the URL ``?board=`` parameter
+    is used, then the main board. A board of another project is rejected.
     """
     proj, err = _resolve_project(project)
+    if err:
+        return {"error": err}
+    brd, err = _resolve_board(proj, board)
     if err:
         return {"error": err}
     msg = _guard_setting("allow_agent_create_tasks")
@@ -272,9 +336,12 @@ def create_task(
             agent_id=agent_id,
             affected_files=affected_files or "",
             project_id=proj["id"],
+            board_id=brd["id"],
         )
     except ValueError as e:
         return {"error": str(e)}
+    if t:
+        t["board"] = brd["name"]
     return t
 
 

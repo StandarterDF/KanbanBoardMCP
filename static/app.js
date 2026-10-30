@@ -2,6 +2,8 @@ const API = "/api";
 let projects = [];
 let currentProjectId = null;
 let currentProjectSlug = null;
+let boards = [];
+let currentBoardId = null;
 let allTasks = [];
 let tasks = [];
 let columns = [];
@@ -134,13 +136,146 @@ function renderProjectSelect() {
   });
 }
 
+/* ---------- Boards ---------- */
+function boardStorageKey(projectId) {
+  return `activeBoardId:${projectId}`;
+}
+
+function savedBoardId(projectId) {
+  const raw = localStorage.getItem(boardStorageKey(projectId));
+  const id = raw ? parseInt(raw, 10) : NaN;
+  return Number.isFinite(id) ? id : null;
+}
+
+async function loadBoards() {
+  boards = await api(`/boards?project_id=${currentProjectId}`);
+  const saved = savedBoardId(currentProjectId);
+  let active = boards.find(b => b.id === currentBoardId);
+  if (!active) active = boards.find(b => b.id === saved);
+  if (!active) active = boards.find(b => b.is_default) || boards[0] || null;
+  currentBoardId = active ? active.id : null;
+  if (currentBoardId) localStorage.setItem(boardStorageKey(currentProjectId), String(currentBoardId));
+  renderBoards();
+}
+
+function renderBoards() {
+  const wrap = $("#boardTabs");
+  if (!wrap) return;
+  const scrollLeft = wrap.scrollLeft;
+  wrap.innerHTML = "";
+  boards.forEach(b => {
+    const chip = document.createElement("div");
+    chip.className = "board-tab" + (b.id === currentBoardId ? " active" : "");
+    chip.dataset.boardId = b.id;
+    chip.title = b.is_default
+      ? "Главная доска проекта (удалить нельзя)"
+      : "Доска проекта";
+
+    const name = document.createElement("span");
+    name.className = "board-tab-name";
+    name.textContent = b.name;
+    chip.appendChild(name);
+
+    const count = document.createElement("span");
+    count.className = "board-tab-count";
+    count.textContent = b.task_count ?? 0;
+    chip.appendChild(count);
+
+    if (!b.is_default) {
+      const rename = document.createElement("button");
+      rename.type = "button";
+      rename.className = "board-tab-action";
+      rename.title = "Переименовать доску";
+      rename.textContent = "✎";
+      rename.addEventListener("click", (e) => {
+        e.stopPropagation();
+        renameBoard(b.id);
+      });
+      chip.appendChild(rename);
+
+      const del = document.createElement("button");
+      del.type = "button";
+      del.className = "board-tab-action danger";
+      del.title = "Удалить доску";
+      del.textContent = "🗑";
+      del.addEventListener("click", (e) => {
+        e.stopPropagation();
+        deleteBoard(b.id);
+      });
+      chip.appendChild(del);
+    }
+
+    chip.addEventListener("click", () => switchBoard(b.id));
+    wrap.appendChild(chip);
+  });
+  wrap.scrollLeft = scrollLeft;
+}
+
+async function switchBoard(id) {
+  if (id === currentBoardId) return;
+  if (!boards.find(b => b.id === id)) return;
+  currentBoardId = id;
+  localStorage.setItem(boardStorageKey(currentProjectId), String(id));
+  renderBoards();
+  await loadTasks();
+}
+
+async function createBoard() {
+  const name = prompt("Название доски:");
+  if (!name || !name.trim()) return;
+  try {
+    const board = await api("/boards", {
+      method: "POST",
+      body: JSON.stringify({ name: name.trim(), project_id: currentProjectId }),
+    });
+    await loadBoards();
+    if (board && board.id) await switchBoard(board.id);
+    else await loadTasks();
+  } catch (err) { alert(err.message); }
+}
+
+async function renameBoard(id) {
+  const board = boards.find(b => b.id === id);
+  if (!board) return;
+  const name = prompt("Новое название доски:", board.name);
+  if (!name || !name.trim() || name.trim() === board.name) return;
+  try {
+    await api(`/boards/${id}`, { method: "PUT", body: JSON.stringify({ name: name.trim() }) });
+    await loadBoards();
+    await loadTasks();
+  } catch (err) { alert(err.message); }
+}
+
+async function deleteBoard(id) {
+  const board = boards.find(b => b.id === id);
+  if (!board) return;
+  if (board.is_default) { alert("Главную доску удалить нельзя"); return; }
+  if (!confirm(`Удалить доску «${board.name}»?`)) return;
+  try {
+    await api(`/boards/${id}`, { method: "DELETE" });
+    await loadBoards();
+    await loadTasks();
+  } catch (err) { alert(err.message); }
+}
+
+function syncActiveBoardCount() {
+  const board = boards.find(b => b.id === currentBoardId);
+  if (!board) return;
+  if (board.task_count !== allTasks.length) {
+    board.task_count = allTasks.length;
+    renderBoards();
+  }
+}
+
 async function switchProject(id) {
   const p = projects.find(x => x.id === id);
   if (!p) return;
   currentProjectId = p.id;
   currentProjectSlug = p.slug;
+  currentBoardId = null;
   localStorage.setItem("activeProjectSlug", p.slug);
   renderProjectSelect();
+  await loadBoards();
   await loadCategories();
   await loadColumns();
   await loadTasks();
@@ -172,7 +307,9 @@ async function deleteProject() {
   projects = projects.filter(x => x.id !== currentProjectId);
   const p = projects.find(x => x.slug === "default") || projects[0];
   currentProjectId = p.id; currentProjectSlug = p.slug;
+  currentBoardId = null;
   localStorage.setItem("activeProjectSlug", p.slug);
+  await loadBoards();
   await loadCategories();
   await loadColumns();
   await loadTasks();
@@ -287,7 +424,8 @@ async function deleteColumn() {
 
 /* ---------- Tasks ---------- */
 async function loadTasks() {
-  allTasks = await api(`/tasks?project_id=${currentProjectId}`);
+  const boardQuery = currentBoardId != null ? `&board_id=${currentBoardId}` : "";
+  allTasks = await api(`/tasks?project_id=${currentProjectId}${boardQuery}`);
   applyFilters();
 }
 
@@ -307,8 +445,32 @@ function applyFilters() {
   renderBoard();
 }
 
+function captureBoardScroll() {
+  const board = $("#board");
+  if (!board) return null;
+  const columnsScroll = {};
+  board.querySelectorAll(".column-body").forEach(body => {
+    columnsScroll[body.dataset.columnId] = body.scrollTop;
+  });
+  return { left: board.scrollLeft, top: board.scrollTop, columns: columnsScroll };
+}
+
+function restoreBoardScroll(state) {
+  if (!state) return;
+  const board = $("#board");
+  if (!board) return;
+  board.scrollLeft = state.left;
+  board.scrollTop = state.top;
+  board.querySelectorAll(".column-body").forEach(body => {
+    const value = state.columns[body.dataset.columnId];
+    if (value != null) body.scrollTop = value;
+  });
+}
+
 function renderBoard() {
   const board = $("#board");
+  // Polling re-renders the whole board; keep the user's scroll position.
+  const scrollState = captureBoardScroll();
   board.innerHTML = "";
   columns.forEach(col => {
     const colEl = document.createElement("div");
@@ -440,6 +602,9 @@ function renderBoard() {
   addCol.innerHTML = `<button class="add-stage-btn" type="button">+ Добавить стадию</button>`;
   addCol.querySelector("button").addEventListener("click", () => openColumnModal(null));
   board.appendChild(addCol);
+
+  restoreBoardScroll(scrollState);
+  syncActiveBoardCount();
 
   // close menus on outside click handled globally
 }
@@ -809,7 +974,7 @@ async function saveTask() {
       await loadTasks();
       closeModal();
     } else {
-      await api("/tasks", { method: "POST", body: JSON.stringify({ ...payload, project_id: currentProjectId }) });
+      await api("/tasks", { method: "POST", body: JSON.stringify({ ...payload, project_id: currentProjectId, board_id: currentBoardId }) });
       dirty = false;
       await loadTasks();
       closeModal();
@@ -1081,6 +1246,7 @@ async function analyze() {
 /* ---------- Init ---------- */
 document.addEventListener("DOMContentLoaded", async () => {
   await loadProjects();
+  await loadBoards();
   await loadCategories();
   await loadColumns();
   await loadTasks();
@@ -1090,6 +1256,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   $("#btnNewProject").addEventListener("click", createProject);
   $("#btnRenameProject").addEventListener("click", renameProject);
   $("#btnDeleteProject").addEventListener("click", deleteProject);
+  $("#btnNewBoard").addEventListener("click", createBoard);
 
   $("#searchInput").addEventListener("input", applyFilters);
 
@@ -1164,7 +1331,11 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   // polling
   setInterval(async () => {
+    if (document.hidden) return;
+    // Do not rebuild the DOM while the task modal is open or a card is dragged.
     if ($("#taskModal").classList.contains("active")) return;
+    if ($("#columnModal").classList.contains("active")) return;
+    if (draggedTaskId != null) return;
     try { await loadTasks(); } catch (e) {}
   }, 2500);
 });

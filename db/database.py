@@ -68,6 +68,8 @@ DEFAULT_CATEGORIES = [
     ("Cleanup", 4, "#3ddc97"),
 ]
 
+DEFAULT_BOARD_NAME = "Главная"
+
 _CATEGORY_PALETTE = [
     "#5b8cff",
     "#ff5c5c",
@@ -90,6 +92,51 @@ def create_default_columns(cur, project_id: int):
             "INSERT INTO columns (project_id, name, order_index, color) VALUES (?,?,?,?)",
             (project_id, name, order_index, color),
         )
+
+
+def create_default_board(cur, project_id: int) -> int:
+    """Return the id of the project's main board, creating it when missing.
+
+    Idempotent: repeated calls never create duplicates. If a board named
+    ``Главная`` already exists it is promoted to the main board instead of
+    adding a second one.
+    """
+    cur.execute(
+        "SELECT id FROM boards WHERE project_id = ? AND is_default = 1 ORDER BY id LIMIT 1",
+        (project_id,),
+    )
+    row = cur.fetchone()
+    if row:
+        board_id = row["id"]
+    else:
+        # Python casefold because SQLite's NOCASE only folds ASCII.
+        cur.execute(
+            "SELECT id, name FROM boards WHERE project_id = ? ORDER BY id",
+            (project_id,),
+        )
+        match = next(
+            (
+                r
+                for r in cur.fetchall()
+                if str(r["name"]).strip().casefold() == DEFAULT_BOARD_NAME.casefold()
+            ),
+            None,
+        )
+        if match:
+            board_id = match["id"]
+            cur.execute("UPDATE boards SET is_default = 1 WHERE id = ?", (board_id,))
+        else:
+            cur.execute(
+                """INSERT INTO boards (project_id, name, is_default, order_index, created_at)
+                   VALUES (?,?,?,?,?)""",
+                (project_id, DEFAULT_BOARD_NAME, 1, 0, _now()),
+            )
+            board_id = cur.lastrowid
+    cur.execute(
+        "UPDATE boards SET is_default = 0 WHERE project_id = ? AND id <> ? AND is_default = 1",
+        (project_id, board_id),
+    )
+    return board_id
 
 
 def create_default_categories(cur, project_id: int):
@@ -125,6 +172,17 @@ CREATE TABLE IF NOT EXISTS projects (
     created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS boards (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL,
+    name TEXT NOT NULL COLLATE NOCASE,
+    is_default INTEGER NOT NULL DEFAULT 0,
+    order_index INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+    UNIQUE (project_id, name)
+);
+
 CREATE TABLE IF NOT EXISTS columns (
     id INTEGER PRIMARY KEY,
     project_id INTEGER NOT NULL DEFAULT 1,
@@ -148,6 +206,7 @@ CREATE TABLE IF NOT EXISTS categories (
 CREATE TABLE IF NOT EXISTS tasks (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     project_id INTEGER NOT NULL DEFAULT 1,
+    board_id INTEGER,
     title TEXT NOT NULL,
     description TEXT DEFAULT '',
     category TEXT DEFAULT 'Feature',
@@ -233,10 +292,38 @@ def migrate(cur, conn):
     # audit_log migration: optional human-readable note / comment
     _ensure_column(cur, conn, "audit_log", "note", "TEXT")
 
+    # boards migration: every project gets a main board, every task a board_id
+    migrate_boards(cur, conn)
+
     # categories migration: defaults for every project + canonical task values
     migrate_categories(cur)
 
     conn.commit()
+
+
+def migrate_boards(cur, conn):
+    """Create the ``boards`` table data and attach tasks to a board.
+
+    Idempotent. Existing tasks keep working: they are attached to the main
+    board of their own project. Tasks pointing at a board of another project
+    (or a missing board) are moved back to their project's main board.
+    """
+    _ensure_column(cur, conn, "tasks", "board_id", "INTEGER")
+    cur.execute("SELECT id FROM projects ORDER BY id")
+    project_ids = [r["id"] for r in cur.fetchall()]
+    for pid in project_ids:
+        default_board_id = create_default_board(cur, pid)
+        cur.execute(
+            """UPDATE tasks SET board_id = ?
+               WHERE project_id = ?
+                 AND (board_id IS NULL
+                      OR board_id NOT IN (SELECT id FROM boards WHERE project_id = ?))""",
+            (default_board_id, pid, pid),
+        )
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_tasks_board ON tasks(board_id)")
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_boards_project ON boards(project_id, order_index)"
+    )
 
 
 def _category_color(index: int) -> str:
@@ -312,6 +399,7 @@ def seed_defaults(cur, conn):
     for prow in cur.fetchall():
         create_default_columns(cur, prow["id"])
         create_default_categories(cur, prow["id"])
+        create_default_board(cur, prow["id"])
 
     # mcp_settings
     settings = [
