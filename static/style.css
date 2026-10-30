@@ -448,8 +448,10 @@ body {
 .comment-item { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 8px; font-size: 13px; }
 .comment-author { font-weight: 600; color: var(--accent); font-size: 12px; }
 .comment-text { margin-top: 4px; white-space: pre-wrap; }
-.comment-form { display: flex; gap: 8px; margin-top: 8px; }
-.comment-form input { flex: 1; }
+.comment-form { display: flex; gap: 8px; margin-top: 8px; align-items: flex-end; }
+.comment-form input, .comment-form textarea { flex: 1; }
+.comment-form textarea { resize: vertical; min-height: 36px; max-height: 140px; line-height: 1.4; }
+.comment-form .btn { flex-shrink: 0; }
 .muted { color: var(--muted); font-size: 12px; }
 
 /* Markdown */

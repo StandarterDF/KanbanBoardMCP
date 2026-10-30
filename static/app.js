@@ -1393,8 +1393,22 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (!text) return;
     await api(`/tasks/${id}/comments`, { method: "POST", body: JSON.stringify({ author: "User", text }) });
     $("#commentText").value = "";
+    $("#commentText").style.height = "auto";
     await loadComments(id);
     await loadTasks();
+  });
+
+  // Enter sends; Shift+Enter inserts a newline (the input is a textarea).
+  $("#commentText").addEventListener("input", () => {
+    const box = $("#commentText");
+    box.style.height = "auto";
+    box.style.height = Math.min(box.scrollHeight, 140) + "px";
+  });
+  $("#commentText").addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      $("#btnAddComment").click();
+    }
   });
 
   // column modal
