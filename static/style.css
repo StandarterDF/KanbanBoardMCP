@@ -240,16 +240,24 @@ body {
 }
 
 /* Task layout */
+.modal-body.task-layout { overflow: hidden; min-height: 0; }
 .task-layout { flex-direction: row; gap: 18px; }
-.task-main { flex: 7 1 0; min-width: 0; display: flex; flex-direction: column; gap: 12px; }
-.task-sidebar { flex: 3 1 0; min-width: 240px; display: flex; flex-direction: column; gap: 12px; }
+.task-main {
+  flex: 7 1 0; min-width: 0; min-height: 0; overflow-y: auto; padding-right: 4px;
+  display: flex; flex-direction: column; gap: 12px;
+}
+.task-sidebar {
+  flex: 3 1 0; min-width: 240px; min-height: 0; overflow-y: auto; padding-right: 4px;
+  display: flex; flex-direction: column; gap: 12px;
+}
 .task-title-input {
   font-size: 18px; font-weight: 600; background: transparent; border: none;
   border-bottom: 1px solid var(--border); border-radius: 0; padding: 6px 2px;
   color: var(--text-strong);
 }
 .task-title-input:focus { border-color: var(--accent); box-shadow: none; }
-.task-pane { display: flex; flex-direction: column; gap: 12px; min-height: 0; }
+.task-pane { display: flex; flex-direction: column; gap: 12px; min-height: 0; flex: 0 0 auto; }
+.task-pane > textarea, .task-pane > .markdown-body, .task-pane > .comments-section { flex: 0 0 auto; }
 .desc-toolbar { display: flex; gap: 6px; }
 .tab {
   background: transparent; border: 1px solid var(--border); color: var(--muted);

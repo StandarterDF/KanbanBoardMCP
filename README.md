@@ -34,6 +34,8 @@ python -m venv .venv
 
 Основной способ — HTTP Stream (веб-сервер должен быть запущен). Проект задаётся в URL:
 
+Cursor / Claude Desktop / Cline:
+
 ```json
 {
   "mcpServers": {
@@ -43,6 +45,28 @@ python -m venv .venv
   }
 }
 ```
+
+OpenCode (V2, проект `Sekwah_Naruto_Mod`):
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "servers": {
+      "kanban": {
+        "type": "remote",
+        "url": "http://127.0.0.1:34535/mcp?project=narutomod",
+        "oauth": false,
+        "codemode": false
+      }
+    }
+  }
+}
+```
+
+`codemode: false` важен для OpenCode: инструменты MCP будут доступны напрямую
+(`kanban_get_tasks`, `kanban_create_task`, ...), а не через `execute`/`fetch`.
+Сервер сам просит агента не использовать REST API и `fetch` для операций с доской.
 
 Для другого проекта измените query-параметр `project=<slug>`. Slug проекта виден в `GET /api/projects`; у нового проекта автоматически создаются стандартные стадии (Backlog, In Progress, Implemented, Tested, Committed).
 
@@ -59,6 +83,11 @@ python -m venv .venv
   `Agent:<agent_id>`, а причина сохраняется в истории.
 - MCP-инструмент `get_task_history(task_id, project=None)` возвращает те же
   события истории.
+- MCP-инструменты `get_board`, `get_columns`, `get_task`, `update_task` позволяют
+  агенту работать с доской без HTTP-запросов к REST API.
+- `delete_task(task_id, user_explicitly_approved=True)` удаляет задачу только
+  после явного подтверждения пользователя; без флага возвращается
+  `ACTION_REQUIRED`.
 
 Fallback (stdio, проект по умолчанию или env `KANBAN_PROJECT`):
 

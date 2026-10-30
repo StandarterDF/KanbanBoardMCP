@@ -6,6 +6,7 @@ from fastmcp import FastMCP
 from fastmcp.server.dependencies import get_http_request
 
 from db.database import init_db
+from models.schemas import TaskUpdate
 from services import (
     task_service,
     comment_service,
@@ -15,7 +16,30 @@ from services import (
     history_service,
 )
 
-mcp = FastMCP(name="KanbanBoardMCP", instructions="Local Kanban task board MCP server.")
+MCP_INSTRUCTIONS = """
+Local Kanban task-board MCP server.
+
+IMPORTANT: use these MCP tools directly for all board operations. Do NOT call
+the REST API (/api/..., /openapi.json) and do NOT use fetch/HTTP requests to
+read or modify tasks. The project is already selected by the MCP URL query
+parameter `?project=<slug>`; never guess a project id.
+
+Typical flow:
+- register_agent once per session;
+- get_board or get_columns to inspect the board;
+- get_tasks / get_task to read tasks;
+- create_task to add tasks to Backlog;
+- update_task for title/description/category/priority/affected_files;
+- add_comment_to_task for progress notes;
+- get_task_history to inspect the timeline;
+- request_move_task to move a task. The server enforces adjacent stages only
+  (previous/next). Without explicit user approval the tool returns
+  ACTION_REQUIRED; ask the user before passing user_explicitly_approved=true;
+- delete_task only after explicit user confirmation, with
+  user_explicitly_approved=true.
+"""
+
+mcp = FastMCP(name="KanbanBoardMCP", instructions=MCP_INSTRUCTIONS)
 
 
 def _resolve_project(override: Optional[str] = None) -> (Dict[str, Any], Optional[str]):
@@ -91,6 +115,96 @@ def get_tasks(
         t["project"] = proj["slug"]
         out.append(t)
     return out
+
+
+@mcp.tool
+def get_columns(project: Optional[str] = None) -> List[dict]:
+    """Return the ordered workflow columns of the current project."""
+    proj, err = _resolve_project(project)
+    if err:
+        return [{"error": err}]
+    return task_service.list_columns(project_id=proj["id"])
+
+
+@mcp.tool
+def get_board(project: Optional[str] = None) -> dict:
+    """Return project info, ordered columns and all tasks in one call.
+
+    Use this instead of fetching the REST API when you need the full board.
+    """
+    proj, err = _resolve_project(project)
+    if err:
+        return {"error": err}
+    cols = task_service.list_columns(project_id=proj["id"])
+    tasks = task_service.list_tasks(project_id=proj["id"])
+    for t in tasks:
+        t["comment_count"] = len(comment_service.list_comments(t["id"]))
+        t["project"] = proj["slug"]
+    return {
+        "project": {
+            "id": proj["id"],
+            "name": proj["name"],
+            "slug": proj["slug"],
+            "description": proj.get("description", ""),
+        },
+        "columns": cols,
+        "tasks": tasks,
+    }
+
+
+@mcp.tool
+def get_task(task_id: int, project: Optional[str] = None) -> dict:
+    """Return one task with metadata, comments count and project slug."""
+    proj, err = _resolve_project(project)
+    if err:
+        return {"error": err}
+    t = task_service.get_task(task_id)
+    if not t:
+        return {"error": f"Task {task_id} not found"}
+    if t.get("project_id") != proj["id"]:
+        return {"error": f"Task {task_id} not in project {proj['slug']}"}
+    t["project"] = proj["slug"]
+    return t
+
+
+@mcp.tool
+def update_task(
+    agent_id: str,
+    task_id: int,
+    title: Optional[str] = None,
+    description: Optional[str] = None,
+    category: Optional[str] = None,
+    priority: Optional[str] = None,
+    affected_files: Optional[str] = None,
+    project: Optional[str] = None,
+) -> dict:
+    """Update task fields. Status changes must go through request_move_task."""
+    proj, err = _resolve_project(project)
+    if err:
+        return {"error": err}
+    t = task_service.get_task(task_id)
+    if not t:
+        return {"error": f"Task {task_id} not found"}
+    if t.get("project_id") != proj["id"]:
+        return {"error": f"Task {task_id} not in project {proj['slug']}"}
+    agent_service.touch_agent(agent_id)
+    try:
+        updated = task_service.update_task(
+            task_id,
+            TaskUpdate(
+                title=title,
+                description=description,
+                category=category,
+                priority=priority,
+                affected_files=affected_files,
+            ),
+            actor=f"agent:{agent_id}",
+        )
+    except ValueError as e:
+        return {"error": str(e)}
+    if updated:
+        updated["project"] = proj["slug"]
+    return updated
 
 
 @mcp.tool
@@ -173,6 +287,51 @@ def add_comment_to_task(
         return {"error": f"Task {task_id} not in project {proj['slug']}"}
     c = comment_service.add_comment(task_id, f"Agent:{agent_id}", comment_text)
     return c
+
+
+@mcp.tool
+def delete_task(
+    agent_id: str,
+    task_id: int,
+    user_explicitly_approved: bool = False,
+    reason: str = "",
+    project: Optional[str] = None,
+) -> dict:
+    """Permanently delete a task after explicit user confirmation.
+
+    Set ``user_explicitly_approved=True`` only when the user explicitly asked
+    to delete this exact task. Never use REST DELETE endpoints directly.
+    """
+    proj, err = _resolve_project(project)
+    if err:
+        return {"error": err}
+    agent_service.touch_agent(agent_id)
+    t = task_service.get_task(task_id)
+    if not t:
+        return {"error": f"Task {task_id} not found"}
+    if t.get("project_id") != proj["id"]:
+        return {"error": f"Task {task_id} not in project {proj['slug']}"}
+    if not user_explicitly_approved:
+        return {
+            "status": "ACTION_REQUIRED",
+            "message": (
+                f"Удаление задачи необратимо. Спроси пользователя: "
+                f"'Удалить задачу #{task_id} ({t['title']})?'"
+            ),
+        }
+    history_service.record_event(
+        task_id,
+        "deleted",
+        old_value=str(t.get("column_id")),
+        actor=f"agent:{agent_id}",
+        note=(reason or "").strip() or None,
+    )
+    deleted = task_service.delete_task(task_id)
+    return {
+        "status": "deleted" if deleted else "not_found",
+        "task_id": task_id,
+        "title": t["title"],
+    }
 
 
 @mcp.tool
