@@ -60,6 +60,25 @@ DEFAULT_COLUMNS = [
     ("Committed", 4, "#6f42c1"),
 ]
 
+DEFAULT_CATEGORIES = [
+    ("Feature", 0, "#5b8cff"),
+    ("Bug", 1, "#ff5c5c"),
+    ("Rework", 2, "#ffb47d"),
+    ("Balance", 3, "#c9a6ff"),
+    ("Cleanup", 4, "#3ddc97"),
+]
+
+_CATEGORY_PALETTE = [
+    "#5b8cff",
+    "#ff5c5c",
+    "#ffb47d",
+    "#c9a6ff",
+    "#3ddc97",
+    "#ffd166",
+    "#4cc9f0",
+    "#f78fb3",
+]
+
 
 def create_default_columns(cur, project_id: int):
     """Create the standard workflow columns for a project if it has none."""
@@ -70,6 +89,23 @@ def create_default_columns(cur, project_id: int):
         cur.execute(
             "INSERT INTO columns (project_id, name, order_index, color) VALUES (?,?,?,?)",
             (project_id, name, order_index, color),
+        )
+
+
+def create_default_categories(cur, project_id: int):
+    """Create the standard categories for a project if it has none."""
+    cur.execute(
+        "SELECT COUNT(*) AS c FROM categories WHERE project_id = ?", (project_id,)
+    )
+    if cur.fetchone()["c"]:
+        return
+    ts = _now()
+    for name, order_index, color in DEFAULT_CATEGORIES:
+        cur.execute(
+            """INSERT OR IGNORE INTO categories
+               (project_id, name, color, order_index, created_at)
+               VALUES (?,?,?,?,?)""",
+            (project_id, name, color, order_index, ts),
         )
 
 
@@ -96,6 +132,17 @@ CREATE TABLE IF NOT EXISTS columns (
     order_index INTEGER NOT NULL DEFAULT 0,
     color TEXT NOT NULL DEFAULT '#4a90d9',
     FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS categories (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL DEFAULT 1,
+    name TEXT NOT NULL COLLATE NOCASE,
+    color TEXT NOT NULL DEFAULT '#5b8cff',
+    order_index INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+    UNIQUE (project_id, name)
 );
 
 CREATE TABLE IF NOT EXISTS tasks (
@@ -186,9 +233,66 @@ def migrate(cur, conn):
     # audit_log migration: optional human-readable note / comment
     _ensure_column(cur, conn, "audit_log", "note", "TEXT")
 
-    # comments FK cascade already; nothing
+    # categories migration: defaults for every project + canonical task values
+    migrate_categories(cur)
 
     conn.commit()
+
+
+def _category_color(index: int) -> str:
+    return _CATEGORY_PALETTE[index % len(_CATEGORY_PALETTE)]
+
+
+def migrate_categories(cur):
+    """Ensure every project has categories and every task points to one of them.
+
+    Known default names are normalized case-insensitively (``balance`` ->
+    ``Balance``). Unknown task categories are materialized as project categories
+    so existing tasks never reference a missing category.
+    """
+    cur.execute("SELECT id FROM projects ORDER BY id")
+    for prow in cur.fetchall():
+        pid = prow["id"]
+        create_default_categories(cur, pid)
+        cur.execute(
+            "SELECT name FROM categories WHERE project_id = ? ORDER BY order_index, id",
+            (pid,),
+        )
+        ordered = [r["name"] for r in cur.fetchall()]
+        by_key = {name.strip().casefold(): name for name in ordered}
+        fallback = ordered[0] if ordered else None
+
+        cur.execute("SELECT DISTINCT category FROM tasks WHERE project_id = ?", (pid,))
+        raw_values = [r["category"] for r in cur.fetchall()]
+        for raw in raw_values:
+            if raw is None or str(raw).strip() == "":
+                if fallback:
+                    cur.execute(
+                        """UPDATE tasks SET category = ?
+                           WHERE project_id = ?
+                             AND (category IS NULL OR TRIM(category) = '')""",
+                        (fallback, pid),
+                    )
+                continue
+            key = str(raw).strip().casefold()
+            canonical = by_key.get(key)
+            if canonical is None:
+                canonical = str(raw).strip()
+                color = _category_color(len(ordered))
+                cur.execute(
+                    """INSERT OR IGNORE INTO categories
+                       (project_id, name, color, order_index, created_at)
+                       VALUES (?,?,?,?,?)""",
+                    (pid, canonical, color, len(ordered), _now()),
+                )
+                by_key[key] = canonical
+                ordered.append(canonical)
+            cur.execute(
+                """UPDATE tasks SET category = ?
+                   WHERE project_id = ? AND category = ? COLLATE NOCASE
+                     AND category <> ?""",
+                (canonical, pid, raw, canonical),
+            )
 
 
 def seed_defaults(cur, conn):
@@ -207,6 +311,7 @@ def seed_defaults(cur, conn):
     cur.execute("SELECT id FROM projects ORDER BY id")
     for prow in cur.fetchall():
         create_default_columns(cur, prow["id"])
+        create_default_categories(cur, prow["id"])
 
     # mcp_settings
     settings = [

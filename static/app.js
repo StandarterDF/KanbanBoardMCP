@@ -5,6 +5,7 @@ let currentProjectSlug = null;
 let allTasks = [];
 let tasks = [];
 let columns = [];
+let categories = [];
 let dirty = false;
 let currentTaskId = null;
 let descMode = "edit";
@@ -140,6 +141,7 @@ async function switchProject(id) {
   currentProjectSlug = p.slug;
   localStorage.setItem("activeProjectSlug", p.slug);
   renderProjectSelect();
+  await loadCategories();
   await loadColumns();
   await loadTasks();
   await renderFilters();
@@ -171,6 +173,7 @@ async function deleteProject() {
   const p = projects.find(x => x.slug === "default") || projects[0];
   currentProjectId = p.id; currentProjectSlug = p.slug;
   localStorage.setItem("activeProjectSlug", p.slug);
+  await loadCategories();
   await loadColumns();
   await loadTasks();
   await renderFilters();
@@ -180,6 +183,50 @@ async function deleteProject() {
 /* ---------- Columns ---------- */
 async function loadColumns() {
   columns = await api(`/columns?project_id=${currentProjectId}`);
+}
+
+/* ---------- Categories ---------- */
+async function loadCategories() {
+  categories = await api(`/categories?project_id=${currentProjectId}`);
+}
+
+function categoryByName(name) {
+  const target = String(name ?? "").toLowerCase();
+  return categories.find(c => String(c.name).toLowerCase() === target) || null;
+}
+
+function categoryColor(name) {
+  const c = categoryByName(name);
+  return c ? c.color : "#5b8cff";
+}
+
+// Category select is fed exclusively from the current project's categories.
+// Existing tasks whose category is missing from the list keep a temporary
+// option so their value is not lost; new tasks can only pick list values.
+function populateCategorySelect(selected, allowLegacy) {
+  const sel = $("#taskCategory");
+  sel.innerHTML = "";
+  categories.forEach(cat => {
+    const opt = document.createElement("option");
+    opt.value = cat.name;
+    opt.textContent = cat.name;
+    sel.appendChild(opt);
+  });
+  if (selected) {
+    const match = Array.from(sel.options).find(
+      opt => opt.value.toLowerCase() === String(selected).toLowerCase()
+    );
+    if (match) {
+      sel.value = match.value;
+    } else if (allowLegacy) {
+      const opt = document.createElement("option");
+      opt.value = selected;
+      opt.textContent = `${selected} (нет в проекте)`;
+      sel.appendChild(opt);
+      sel.value = selected;
+    }
+  }
+  if (!sel.value && sel.options.length) sel.selectedIndex = 0;
 }
 
 function columnHasTasks(colId) {
@@ -366,7 +413,7 @@ function renderBoard() {
         <div class="card-title">${escapeHtml(t.title)}</div>
         <div class="card-meta">
           <span class="badge priority-${t.priority}">${t.priority}</span>
-          <span class="badge">${escapeHtml(t.category)}</span>
+          <span class="badge cat-badge" style="--cat-color:${escapeHtml(categoryColor(t.category))}">${escapeHtml(t.category)}</span>
         </div>
         <div class="card-comments">💬 ${t.comment_count || 0}</div>
       `;
@@ -500,7 +547,7 @@ async function openTaskModal(taskId) {
     $("#taskTitle").value = t.title;
     $("#taskDesc").value = t.description || "";
     setSelectValue($("#taskPriority"), t.priority);
-    setSelectValue($("#taskCategory"), t.category);
+    populateCategorySelect(t.category, true);
     $("#taskAgent").value = t.agent_id || "";
     $("#taskAffectedFiles").value = t.affected_files || "";
     $("#modalTitle").textContent = `Задача #${t.id}`;
@@ -515,7 +562,7 @@ async function openTaskModal(taskId) {
     $("#taskTitle").value = "";
     $("#taskDesc").value = "";
     $("#taskPriority").value = "Medium";
-    $("#taskCategory").value = "Feature";
+    populateCategorySelect(null, false);
     $("#taskAgent").value = "";
     $("#taskAffectedFiles").value = "";
     $("#modalTitle").textContent = "Новая задача";
@@ -787,21 +834,31 @@ function getMultiSelected(id) {
 }
 
 function renderFilters() {
-  const defaults = ["Feature","Bug","Rework","Balance","Cleanup"];
-  const cats = Array.from(new Set([...defaults, ...allTasks.map(t => t.category).filter(Boolean)]));
+  const catNames = categories.map(c => c.name);
+  // Defensive: keep filters for task categories that somehow disappeared.
+  allTasks.forEach(t => {
+    if (t.category && !catNames.some(n => n.toLowerCase() === t.category.toLowerCase())) {
+      catNames.push(t.category);
+    }
+  });
+  const catColors = {};
+  categories.forEach(c => { catColors[c.name] = c.color; });
   const prios = ["Low","Medium","High","Critical"];
-  buildMulti("catFilter", cats, "Категории");
+  buildMulti("catFilter", catNames, "Категории", catColors);
   buildMulti("prioFilter", prios, "Приоритеты");
 }
 
-function buildMulti(id, options, label) {
+function buildMulti(id, options, label, colors) {
   const container = $(`#${id}`);
   const btn = container.querySelector(".ms-btn");
   const panel = container.querySelector(".ms-panel");
   panel.innerHTML = "";
   options.forEach(opt => {
     const lab = document.createElement("label");
-    lab.innerHTML = `<input type="checkbox" value="${opt}"> ${opt}`;
+    const color = colors && colors[opt];
+    lab.innerHTML = `<input type="checkbox" value="${escapeHtml(opt)}">` +
+      (color ? ` <span class="cat-dot" style="background:${escapeHtml(color)}"></span>` : "") +
+      ` <span>${escapeHtml(opt)}</span>`;
     panel.appendChild(lab);
   });
   btn.textContent = `${label} ▾`;
@@ -818,12 +875,98 @@ function buildMulti(id, options, label) {
 }
 
 /* ---------- Settings ---------- */
+function buildCategoryManager() {
+  const wrap = document.createElement("div");
+  wrap.className = "category-manager";
+  wrap.innerHTML = `
+    <div class="section-title">Категории проекта</div>
+    <div class="category-list"></div>
+    <div class="category-add">
+      <input type="color" class="new-cat-color" value="#5b8cff" title="Цвет">
+      <input type="text" class="new-cat-name" placeholder="Новая категория" maxlength="60">
+      <button class="btn btn-primary btn-add-category" type="button">Добавить</button>
+    </div>
+  `;
+  const list = wrap.querySelector(".category-list");
+
+  const refresh = async () => {
+    await loadCategories();
+    renderFilters();
+    applyFilters();
+    renderRows();
+  };
+
+  const renderRows = () => {
+    list.innerHTML = "";
+    if (!categories.length) {
+      list.innerHTML = '<div class="muted">Нет категорий</div>';
+      return;
+    }
+    categories.forEach(cat => {
+      const row = document.createElement("div");
+      row.className = "category-row";
+      row.innerHTML = `
+        <input type="color" class="cat-color" value="${escapeHtml(cat.color)}" title="Цвет">
+        <input type="text" class="cat-name" value="${escapeHtml(cat.name)}" maxlength="60">
+        <button class="icon-btn cat-save" type="button" title="Сохранить">✓</button>
+        <button class="icon-btn cat-delete" type="button" title="Удалить">🗑</button>
+      `;
+      const nameEl = row.querySelector(".cat-name");
+      row.querySelector(".cat-save").addEventListener("click", async () => {
+        const name = nameEl.value.trim();
+        const color = row.querySelector(".cat-color").value;
+        if (!name) { alert("Укажите название категории"); return; }
+        try {
+          await api(`/categories/${cat.id}`, {
+            method: "PUT",
+            body: JSON.stringify({ name, color }),
+          });
+          await refresh();
+        } catch (err) { alert(err.message); }
+      });
+      row.querySelector(".cat-delete").addEventListener("click", async () => {
+        if (!confirm(`Удалить категорию «${cat.name}»?`)) return;
+        try {
+          await api(`/categories/${cat.id}`, { method: "DELETE" });
+          await refresh();
+        } catch (err) { alert(err.message); }
+      });
+      list.appendChild(row);
+    });
+  };
+
+  const addCategory = async () => {
+    const nameEl = wrap.querySelector(".new-cat-name");
+    const name = nameEl.value.trim();
+    if (!name) { nameEl.focus(); return; }
+    const color = wrap.querySelector(".new-cat-color").value;
+    try {
+      await api("/categories", {
+        method: "POST",
+        body: JSON.stringify({ name, color, project_id: currentProjectId }),
+      });
+      nameEl.value = "";
+      await refresh();
+    } catch (err) { alert(err.message); }
+  };
+  wrap.querySelector(".btn-add-category").addEventListener("click", addCategory);
+  wrap.querySelector(".new-cat-name").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); addCategory(); }
+  });
+
+  renderRows();
+  return wrap;
+}
+
 async function openSettings() {
   $("#settingsDrawer").classList.add("open");
   $("#settingsOverlay").classList.add("active");
   const settings = await api("/settings");
   const body = $("#settingsBody");
   body.innerHTML = "";
+
+  await loadCategories();
+  body.appendChild(buildCategoryManager());
 
   const mcpUrl = `${location.origin}/mcp?project=${encodeURIComponent(currentProjectSlug || "default")}`;
   const info = document.createElement("div");
@@ -886,6 +1029,7 @@ async function analyze() {
 /* ---------- Init ---------- */
 document.addEventListener("DOMContentLoaded", async () => {
   await loadProjects();
+  await loadCategories();
   await loadColumns();
   await loadTasks();
   await renderFilters();

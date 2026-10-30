@@ -1,6 +1,12 @@
 import re
 from typing import List, Dict, Any, Optional
-from db.database import db_cursor, now, row_to_dict, create_default_columns
+from db.database import (
+    db_cursor,
+    now,
+    row_to_dict,
+    create_default_columns,
+    create_default_categories,
+)
 
 
 _TRANSLIT = {
@@ -96,6 +102,7 @@ def create_project(
         )
         pid = cur.lastrowid
         create_default_columns(cur, pid)
+        create_default_categories(cur, pid)
     return get_project(pid)
 
 
@@ -141,5 +148,6 @@ def delete_project(project_id: int) -> bool:
         )
         cur.execute("DELETE FROM tasks WHERE project_id = ?", (project_id,))
         cur.execute("DELETE FROM columns WHERE project_id = ?", (project_id,))
+        cur.execute("DELETE FROM categories WHERE project_id = ?", (project_id,))
         cur.execute("DELETE FROM projects WHERE id = ?", (project_id,))
         return cur.rowcount > 0

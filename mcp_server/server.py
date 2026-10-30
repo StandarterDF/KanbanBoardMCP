@@ -14,19 +14,26 @@ from services import (
     agent_service,
     project_service,
     history_service,
+    category_service,
 )
 
 MCP_INSTRUCTIONS = """
 Local Kanban task-board MCP server.
 
 IMPORTANT: use these MCP tools directly for all board operations. Do NOT call
-the REST API (/api/..., /openapi.json) and do NOT use fetch/HTTP requests to
-read or modify tasks. The project is already selected by the MCP URL query
-parameter `?project=<slug>`; never guess a project id.
+the REST API (/api/..., /openapi.json) and do NOT use fetch/webfetch or HTTP
+requests to read or modify tasks. The project is already selected by the MCP
+URL query parameter `?project=<slug>`; never guess a project id.
+
+Categories are project-scoped. Before creating a task call get_categories (or
+get_board) and use one of the category names returned for that project. A task
+cannot be created or updated with a category that does not exist in its
+project.
 
 Typical flow:
 - register_agent once per session;
 - get_board or get_columns to inspect the board;
+- get_categories to inspect the project's categories;
 - get_tasks / get_task to read tasks;
 - create_task to add tasks to Backlog;
 - update_task for title/description/category/priority/affected_files;
@@ -127,8 +134,21 @@ def get_columns(project: Optional[str] = None) -> List[dict]:
 
 
 @mcp.tool
+def get_categories(project: Optional[str] = None) -> List[dict]:
+    """Return the categories of the current project in display order.
+
+    Use one of these names in create_task/update_task; categories are
+    project-scoped and cannot be shared between projects.
+    """
+    proj, err = _resolve_project(project)
+    if err:
+        return [{"error": err}]
+    return category_service.list_categories(project_id=proj["id"])
+
+
+@mcp.tool
 def get_board(project: Optional[str] = None) -> dict:
-    """Return project info, ordered columns and all tasks in one call.
+    """Return project info, ordered columns, categories and all tasks in one call.
 
     Use this instead of fetching the REST API when you need the full board.
     """
@@ -136,6 +156,7 @@ def get_board(project: Optional[str] = None) -> dict:
     if err:
         return {"error": err}
     cols = task_service.list_columns(project_id=proj["id"])
+    cats = category_service.list_categories(project_id=proj["id"])
     tasks = task_service.list_tasks(project_id=proj["id"])
     for t in tasks:
         t["comment_count"] = len(comment_service.list_comments(t["id"]))
@@ -148,6 +169,7 @@ def get_board(project: Optional[str] = None) -> dict:
             "description": proj.get("description", ""),
         },
         "columns": cols,
+        "categories": cats,
         "tasks": tasks,
     }
 
@@ -178,7 +200,11 @@ def update_task(
     affected_files: Optional[str] = None,
     project: Optional[str] = None,
 ) -> dict:
-    """Update task fields. Status changes must go through request_move_task."""
+    """Update task fields. Status changes must go through request_move_task.
+
+    Category is optional, but when supplied it MUST be one of the project's
+    categories (see get_categories); a foreign or unknown category is rejected.
+    """
     proj, err = _resolve_project(project)
     if err:
         return {"error": err}
@@ -218,7 +244,12 @@ def create_task(
     column_id: Optional[str] = None,
     project: Optional[str] = None,
 ) -> dict:
-    """Create a structured task. Project from URL/env/default."""
+    """Create a structured task in the current project.
+
+    ``category`` is required and MUST be one of the names returned by
+    get_categories for this project (defaults: Feature, Bug, Rework, Balance,
+    Cleanup). An unknown or foreign category is rejected.
+    """
     proj, err = _resolve_project(project)
     if err:
         return {"error": err}

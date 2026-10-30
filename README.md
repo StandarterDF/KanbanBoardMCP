@@ -68,7 +68,28 @@ OpenCode (V2, проект `Sekwah_Naruto_Mod`):
 (`kanban_get_tasks`, `kanban_create_task`, ...), а не через `execute`/`fetch`.
 Сервер сам просит агента не использовать REST API и `fetch` для операций с доской.
 
-Для другого проекта измените query-параметр `project=<slug>`. Slug проекта виден в `GET /api/projects`; у нового проекта автоматически создаются стандартные стадии (Backlog, In Progress, Implemented, Tested, Committed).
+Для другого проекта измените query-параметр `project=<slug>`. Slug проекта виден в `GET /api/projects`; у нового проекта автоматически создаются стандартные стадии (Backlog, In Progress, Implemented, Tested, Committed) и стандартные категории: Feature, Bug, Rework, Balance, Cleanup (в этом порядке).
+
+## Категории
+
+Категории принадлежат проекту и настраиваются отдельно для каждого проекта.
+
+- `GET /api/categories?project_id=...` — список категорий проекта (по `order_index`);
+- `POST /api/categories` — `{ "name", "color", "project_id" }`;
+- `PUT /api/categories/{id}` — `{ "name", "color", "order_index" }`;
+- `DELETE /api/categories/{id}` — запрещено, если в категории есть задачи, и нельзя
+  удалить последнюю категорию проекта.
+
+Новые проекты получают набор по умолчанию: `Feature`, `Bug`, `Rework`,
+`Balance`, `Cleanup`. Переименование категории обновляет задачи, которые её
+используют. Задачу можно создать или изменить только с категорией из её проекта;
+проверка выполняется в сервисном слое, поэтому MCP не может её обойти. В UI
+категориями можно управлять в настройках (⚙ → «Категории проекта»).
+
+MCP-инструменты: `get_categories(project=None)` возвращает категории проекта,
+`get_board` включает их в ответ. Для `create_task` категория обязательна, а
+`update_task` отвергает категорию, которой нет в проекте.
+
 
 ## Стадии, история и MCP
 
@@ -83,8 +104,8 @@ OpenCode (V2, проект `Sekwah_Naruto_Mod`):
   `Agent:<agent_id>`, а причина сохраняется в истории.
 - MCP-инструмент `get_task_history(task_id, project=None)` возвращает те же
   события истории.
-- MCP-инструменты `get_board`, `get_columns`, `get_task`, `update_task` позволяют
-  агенту работать с доской без HTTP-запросов к REST API.
+- MCP-инструменты `get_board`, `get_categories`, `get_columns`, `get_task`,
+  `update_task` позволяют агенту работать с доской без HTTP-запросов к REST API.
 - `delete_task(task_id, user_explicitly_approved=True)` удаляет задачу только
   после явного подтверждения пользователя; без флага возвращается
   `ACTION_REQUIRED`.

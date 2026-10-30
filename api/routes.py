@@ -11,6 +11,8 @@ from models.schemas import (
     ProjectUpdate,
     ColumnCreate,
     ColumnUpdate,
+    CategoryCreate,
+    CategoryUpdate,
 )
 from services import (
     task_service,
@@ -19,6 +21,7 @@ from services import (
     agent_service,
     project_service,
     history_service,
+    category_service,
 )
 
 router = APIRouter(prefix="/api")
@@ -123,6 +126,54 @@ def delete_column(column_id: int):
         raise HTTPException(status_code=400, detail=str(e))
     if not ok:
         raise HTTPException(status_code=404, detail="Column not found")
+    return {"deleted": True}
+
+
+# ---------- Categories ----------
+@router.get("/categories")
+def get_categories(project_id: Optional[int] = Query(None)):
+    pid = _default_project_id(project_id)
+    return category_service.list_categories(project_id=pid)
+
+
+@router.post("/categories")
+def create_category(payload: CategoryCreate):
+    pid = _default_project_id(payload.project_id)
+    try:
+        return category_service.create_category(
+            name=payload.name,
+            color=payload.color,
+            order_index=payload.order_index,
+            project_id=pid,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.put("/categories/{category_id}")
+def update_category(category_id: int, payload: CategoryUpdate):
+    try:
+        cat = category_service.update_category(
+            category_id,
+            name=payload.name,
+            color=payload.color,
+            order_index=payload.order_index,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if not cat:
+        raise HTTPException(status_code=404, detail="Category not found")
+    return cat
+
+
+@router.delete("/categories/{category_id}")
+def delete_category(category_id: int):
+    try:
+        ok = category_service.delete_category(category_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if not ok:
+        raise HTTPException(status_code=404, detail="Category not found")
     return {"deleted": True}
 
 

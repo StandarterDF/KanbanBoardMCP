@@ -200,6 +200,14 @@ body {
 .priority-High { background: #5f3a1e; color: #ffb47d; }
 .priority-Critical { background: #5f1e1e; color: #ff7d7d; }
 .card-comments { font-size: 11px; color: var(--muted); margin-top: 6px; }
+.cat-badge {
+  border: 1px solid color-mix(in srgb, var(--cat-color) 55%, transparent);
+  background: color-mix(in srgb, var(--cat-color) 16%, transparent);
+  color: var(--cat-color);
+}
+.cat-dot {
+  width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex-shrink: 0;
+}
 
 /* Modal */
 .modal-overlay {
@@ -373,10 +381,48 @@ body {
 .mcp-url-card {
   background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-sm);
   padding: 12px; display: flex; flex-direction: column; gap: 8px; margin-bottom: 14px;
-}
-.mcp-url-label { font-size: 12px; color: var(--muted); }
+}.mcp-url-label { font-size: 12px; color: var(--muted); }
 .mcp-url-card code { font-size: 11px; word-break: break-all; color: var(--accent); }
 .mcp-url-card .btn { align-self: flex-start; }
+
+/* Category manager */
+.category-manager { margin-bottom: 18px; }
+.section-title {
+  font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em;
+  color: var(--muted); margin-bottom: 8px;
+}
+.category-list { display: flex; flex-direction: column; gap: 6px; }
+.category-row {
+  display: flex; align-items: center; gap: 8px;
+  background: var(--card); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); padding: 6px 8px;
+}
+.category-row input[type="color"] {
+  width: 26px; height: 26px; padding: 0; border: 1px solid var(--border);
+  border-radius: 6px; background: transparent; cursor: pointer;
+}
+.category-row .cat-name {
+  flex: 1; min-width: 0; background: transparent; border: 1px solid transparent;
+  color: var(--text); font-size: 13px; padding: 4px 6px; border-radius: 6px;
+}
+.category-row .cat-name:hover { border-color: var(--border); }
+.category-row .cat-name:focus { outline: none; border-color: var(--accent); background: var(--bg-elev); }
+.category-row .icon-btn { width: 26px; height: 26px; font-size: 12px; }
+.category-row .cat-delete:hover { color: var(--danger); border-color: var(--danger); }
+.category-add {
+  display: flex; align-items: center; gap: 8px; margin-top: 8px;
+}
+.category-add input[type="color"] {
+  width: 30px; height: 30px; padding: 0; border: 1px solid var(--border);
+  border-radius: 6px; background: transparent; cursor: pointer; flex-shrink: 0;
+}
+.category-add input[type="text"] {
+  flex: 1; min-width: 0; background: var(--card); border: 1px solid var(--border);
+  color: var(--text); padding: 7px 10px; border-radius: var(--radius-sm); font-size: 13px;
+}
+.category-add input[type="text"]:focus {
+  outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft);
+}
 .setting-row {
   display: flex; justify-content: space-between; align-items: center;
   padding: 10px 0; border-bottom: 1px solid var(--border); gap: 12px;

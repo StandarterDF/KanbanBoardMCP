@@ -6,10 +6,9 @@ from models.schemas import (
     Task,
     TaskCreate,
     TaskUpdate,
-    normalize_category,
     normalize_priority,
 )
-from services import project_service, history_service
+from services import project_service, history_service, category_service
 
 
 PRIORITY_ORDER = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3}
@@ -228,7 +227,7 @@ def create_task(
     project_id: Optional[int] = None,
 ) -> Dict[str, Any]:
     pid = _default_project_id(project_id)
-    category = normalize_category(category)
+    category = category_service.resolve_category(pid, category)
     priority = normalize_priority(priority)
     if column_id is None:
         col = get_column_by_name("Backlog", pid)
@@ -283,7 +282,9 @@ def update_task(task_id: int, data, actor: str = "user") -> Optional[Dict[str, A
     if getattr(data, "description", None) is not None:
         fields["description"] = data.description
     if getattr(data, "category", None) is not None:
-        fields["category"] = normalize_category(data.category)
+        fields["category"] = category_service.resolve_category(
+            task["project_id"], data.category
+        )
     if getattr(data, "priority", None) is not None:
         fields["priority"] = normalize_priority(data.priority)
     if getattr(data, "column_id", None) is not None:

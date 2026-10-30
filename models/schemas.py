@@ -46,7 +46,7 @@ class ColumnUpdate(BaseModel):
 class TaskCreate(BaseModel):
     title: str
     description: str = ""
-    category: str = "Feature"
+    category: Optional[str] = None
     priority: str = "Medium"
     column_id: Optional[int] = None
     agent_id: Optional[str] = None
@@ -62,6 +62,28 @@ class TaskUpdate(BaseModel):
     column_id: Optional[int] = None
     agent_id: Optional[str] = None
     affected_files: Optional[str] = None
+
+
+class Category(BaseModel):
+    id: int
+    project_id: int
+    name: str
+    color: str
+    order_index: int
+    created_at: str
+
+
+class CategoryCreate(BaseModel):
+    name: str
+    color: str = "#5b8cff"
+    order_index: Optional[int] = None
+    project_id: Optional[int] = None
+
+
+class CategoryUpdate(BaseModel):
+    name: Optional[str] = None
+    color: Optional[str] = None
+    order_index: Optional[int] = None
 
 
 class Task(BaseModel):
