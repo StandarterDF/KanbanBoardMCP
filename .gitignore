@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+env/
+*.egg-info/
+
+# DB
+tracker.db
+tracker.db-wal
+tracker.db-shm
+
+# Temp / test artifacts
+tmp/
+.test_out/
+*.log
+
+# IDE
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

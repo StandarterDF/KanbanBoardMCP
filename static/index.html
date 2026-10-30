@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Kanban Board MCP</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="topbar">
+  <h1>Kanban Board</h1>
+  <div class="topbar-actions">
+    <button id="btnNewTask" class="btn btn-primary">+ Новая задача</button>
+    <button id="btnSettings" class="btn btn-ghost">⚙ Настройки MCP</button>
+    <button id="btnAnalyze" class="btn btn-ghost">Анализ</button>
+  </div>
+</header>
+
+<main class="board" id="board"></main>
+
+<!-- Task Modal -->
+<div class="modal-overlay" id="taskModal">
+  <div class="modal">
+    <div class="modal-header">
+      <h2 id="modalTitle">Задача</h2>
+      <button class="icon-btn" id="modalClose">✕</button>
+    </div>
+    <div class="modal-body">
+      <input type="hidden" id="taskId">
+      <label>Название
+        <input type="text" id="taskTitle" placeholder="Название задачи">
+      </label>
+      <label>Описание
+        <textarea id="taskDesc" rows="4" placeholder="Описание / критерии приёмки"></textarea>
+      </label>
+      <div class="row">
+        <label>Приоритет
+          <select id="taskPriority">
+            <option>Low</option><option>Medium</option><option>High</option><option>Critical</option>
+          </select>
+        </label>
+        <label>Категория
+          <select id="taskCategory">
+            <option>Feature</option><option>Bug</option><option>Rework</option><option>Balance</option><option>Cleanup</option>
+          </select>
+        </label>
+        <label>Колонка
+          <select id="taskColumn"></select>
+        </label>
+      </div>
+      <div class="comments-section">
+        <h3>Комментарии</h3>
+        <div class="comments-list" id="commentsList"></div>
+        <div class="comment-form">
+          <input type="text" id="commentText" placeholder="Написать комментарий...">
+          <button class="btn btn-primary" id="btnAddComment">Отправить</button>
+        </div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-danger" id="btnDeleteTask">Удалить</button>
+      <button class="btn btn-primary" id="btnSaveTask">Сохранить</button>
+    </div>
+  </div>
+</div>
+
+<!-- Settings Drawer -->
+<div class="drawer-overlay" id="settingsOverlay"></div>
+<aside class="drawer" id="settingsDrawer">
+  <div class="drawer-header">
+    <h2>Настройки MCP</h2>
+    <button class="icon-btn" id="settingsClose">✕</button>
+  </div>
+  <div class="drawer-body" id="settingsBody"></div>
+</aside>
+
+<!-- New Task Modal (reuse) handled by same modal with empty id -->
+
+<script src="/static/app.js"></script>
+</body>
+</html>
