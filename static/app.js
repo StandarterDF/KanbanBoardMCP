@@ -511,6 +511,11 @@ function sortedColumnTasks(columnId) {
       const rank = (PRIORITY_RANK[a.priority] ?? 9) - (PRIORITY_RANK[b.priority] ?? 9);
       return rank || (b.id - a.id);
     });
+  } else if (mode === "priority_asc") {
+    copy.sort((a, b) => {
+      const rank = (PRIORITY_RANK[b.priority] ?? 9) - (PRIORITY_RANK[a.priority] ?? 9);
+      return rank || (a.id - b.id);
+    });
   } else if (mode === "date_desc") {
     copy.sort((a, b) => {
       const diff = Date.parse(b.created_at || 0) - Date.parse(a.created_at || 0);
@@ -545,7 +550,8 @@ function renderBoard() {
         <div class="column-tools">
           <select class="column-sort" data-column-id="${col.id}" title="Сортировка задач в колонке">
             <option value="none">Без сортировки</option>
-            <option value="priority">Важность</option>
+            <option value="priority">Важность ↓</option>
+            <option value="priority_asc">Важность ↑</option>
             <option value="date_desc">Дата ↓</option>
             <option value="date_asc">Дата ↑</option>
           </select>
