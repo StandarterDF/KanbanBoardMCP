@@ -126,12 +126,6 @@ def request_move_task(
             "status": "ACTION_REQUIRED",
             "message": f"Требуется подтверждение владельца. Задай пользователю вопрос: 'Я завершил работу над задачей #{task_id} ({t['title']}). Переместить её в колонку {col_name}?'",
         }
-    # if strict disabled, still require approval? Keep guard always for agents.
-    if not user_explicitly_approved:
-        return {
-            "status": "ACTION_REQUIRED",
-            "message": f"Требуется подтверждение владельца. Задай пользователю вопрос: 'Я завершил работу над задачей #{task_id} ({t['title']}). Переместить её в колонку {col_name}?'",
-        }
 
     updated = task_service.move_task(task_id, cid, actor=f"agent:{agent_id}")
     return {"status": "moved", "task": updated}
