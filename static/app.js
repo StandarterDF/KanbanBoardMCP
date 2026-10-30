@@ -303,11 +303,12 @@ async function openTaskModal(taskId) {
   dirty = false;
   $("#taskId").value = taskId ?? "";
   $("#commentsSection").style.display = "none";
-  descMode = "edit";
-  $("#taskDesc").style.display = "";
-  $("#taskDescPreview").style.display = "none";
-  $("#btnEditDesc").classList.add("active");
-  $("#btnPreviewDesc").classList.remove("active");
+  // Existing tasks open in read/preview mode; new tasks need the editor immediately.
+  descMode = taskId ? "preview" : "edit";
+  $("#taskDesc").style.display = taskId ? "none" : "";
+  $("#taskDescPreview").style.display = taskId ? "" : "none";
+  $("#btnEditDesc").classList.toggle("active", !taskId);
+  $("#btnPreviewDesc").classList.toggle("active", Boolean(taskId));
 
   if (taskId) {
     const t = await api(`/tasks/${taskId}`);
@@ -330,6 +331,8 @@ async function openTaskModal(taskId) {
     $("#modalTitle").textContent = "Новая задача";
     $("#commentsList").innerHTML = "";
   }
+
+  if (taskId) renderPreview();
 
   // status list
   const sel = $("#taskColumn");
