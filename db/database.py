@@ -41,31 +41,77 @@ def db_cursor():
             conn.close()
 
 
+def _table_columns(cur, table):
+    cur.execute(f"PRAGMA table_info({table})")
+    return [r["name"] for r in cur.fetchall()]
+
+
+def _ensure_column(cur, conn, table, col, ddl):
+    cols = _table_columns(cur, table)
+    if col not in cols:
+        cur.execute(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}")
+
+
+DEFAULT_COLUMNS = [
+    ("Backlog", 0, "#6c757d"),
+    ("In Progress", 1, "#0d6efd"),
+    ("Implemented", 2, "#198754"),
+    ("Tested", 3, "#fd7e14"),
+    ("Committed", 4, "#6f42c1"),
+]
+
+
+def create_default_columns(cur, project_id: int):
+    """Create the standard workflow columns for a project if it has none."""
+    cur.execute("SELECT COUNT(*) AS c FROM columns WHERE project_id = ?", (project_id,))
+    if cur.fetchone()["c"]:
+        return
+    for name, order_index, color in DEFAULT_COLUMNS:
+        cur.execute(
+            "INSERT INTO columns (project_id, name, order_index, color) VALUES (?,?,?,?)",
+            (project_id, name, order_index, color),
+        )
+
+
 def init_db():
     with db_cursor() as (cur, conn):
         cur.executescript(SCHEMA)
+        migrate(cur, conn)
         seed_defaults(cur, conn)
 
 
 SCHEMA = r"""
+CREATE TABLE IF NOT EXISTS projects (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    slug TEXT NOT NULL UNIQUE,
+    description TEXT DEFAULT '',
+    created_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS columns (
     id INTEGER PRIMARY KEY,
+    project_id INTEGER NOT NULL DEFAULT 1,
     name TEXT NOT NULL,
     order_index INTEGER NOT NULL DEFAULT 0,
-    color TEXT NOT NULL DEFAULT '#4a90d9'
+    color TEXT NOT NULL DEFAULT '#4a90d9',
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS tasks (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL DEFAULT 1,
     title TEXT NOT NULL,
     description TEXT DEFAULT '',
     category TEXT DEFAULT 'Feature',
     priority TEXT NOT NULL DEFAULT 'Medium',
     column_id INTEGER NOT NULL,
     agent_id TEXT,
+    affected_files TEXT DEFAULT '',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
-    FOREIGN KEY (column_id) REFERENCES columns(id)
+    FOREIGN KEY (column_id) REFERENCES columns(id),
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS comments (
@@ -103,21 +149,60 @@ CREATE TABLE IF NOT EXISTS audit_log (
 """
 
 
-def seed_defaults(cur, conn):
-    # columns
-    cur.execute("SELECT COUNT(*) AS c FROM columns")
+def migrate(cur, conn):
+    # ensure default project exists
+    cur.execute("SELECT COUNT(*) AS c FROM projects")
     if cur.fetchone()["c"] == 0:
-        defaults = [
-            (1, "Backlog", 0, "#6c757d"),
-            (2, "In Progress", 1, "#0d6efd"),
-            (3, "Implemented", 2, "#198754"),
-            (4, "Tested", 3, "#fd7e14"),
-            (5, "Committed", 4, "#6f42c1"),
-        ]
-        cur.executemany(
-            "INSERT INTO columns (id, name, order_index, color) VALUES (?,?,?,?)",
-            defaults,
+        cur.execute(
+            "INSERT INTO projects (name, slug, description, created_at) VALUES (?,?,?,?)",
+            ("Default", "default", "", _now()),
         )
+    # get default project id
+    cur.execute("SELECT id FROM projects WHERE slug='default'")
+    r = cur.fetchone()
+    default_pid = r["id"] if r else 1
+
+    # columns migration
+    _ensure_column(cur, conn, "columns", "project_id", "INTEGER NOT NULL DEFAULT 1")
+    cur.execute(
+        "UPDATE columns SET project_id = ? WHERE project_id IS NULL", (default_pid,)
+    )
+
+    # tasks migration
+    _ensure_column(cur, conn, "tasks", "project_id", "INTEGER NOT NULL DEFAULT 1")
+    _ensure_column(cur, conn, "tasks", "affected_files", "TEXT DEFAULT ''")
+    # backfill project_id from column's project
+    cur.execute(
+        """UPDATE tasks SET project_id = (
+            SELECT c.project_id FROM columns c WHERE c.id = tasks.column_id
+        ) WHERE project_id IS NULL OR project_id = 0"""
+    )
+    cur.execute(
+        "UPDATE tasks SET project_id = ? WHERE project_id IS NULL", (default_pid,)
+    )
+    cur.execute("UPDATE tasks SET affected_files = '' WHERE affected_files IS NULL")
+
+    # comments FK cascade already; nothing
+
+    conn.commit()
+
+
+def seed_defaults(cur, conn):
+    # default project
+    cur.execute("SELECT COUNT(*) AS c FROM projects")
+    if cur.fetchone()["c"] == 0:
+        cur.execute(
+            "INSERT INTO projects (name, slug, description, created_at) VALUES (?,?,?,?)",
+            ("Default", "default", "", _now()),
+        )
+    cur.execute("SELECT id FROM projects WHERE slug='default'")
+    r = cur.fetchone()
+    default_pid = r["id"] if r else 1
+
+    # columns: every project must have at least the standard workflow stages
+    cur.execute("SELECT id FROM projects ORDER BY id")
+    for prow in cur.fetchall():
+        create_default_columns(cur, prow["id"])
 
     # mcp_settings
     settings = [

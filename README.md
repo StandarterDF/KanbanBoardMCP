@@ -19,10 +19,10 @@ python -m venv .venv
 ## Запуск веб-интерфейса
 
 ```powershell
-.\.venv\Scripts\python.exe main.py --host 127.0.0.1 --port 8000
+.\.venv\Scripts\python.exe main.py --host 127.0.0.1 --port 34535
 ```
 
-Откройте http://127.0.0.1:8000
+Или двойным кликом по `start.bat` (он использует порт `34535`). Откройте http://127.0.0.1:34535
 
 ## Запуск MCP-сервера (stdio)
 
@@ -32,18 +32,32 @@ python -m venv .venv
 
 ## Конфигурация MCP (Cursor / Claude Desktop / Cline)
 
+Основной способ — HTTP Stream (веб-сервер должен быть запущен). Проект задаётся в URL:
+
 ```json
 {
   "mcpServers": {
     "kanban-board": {
+      "url": "http://127.0.0.1:34535/mcp?project=default"
+    }
+  }
+}
+```
+
+Для другого проекта измените query-параметр `project=<slug>`. Slug проекта виден в `GET /api/projects`; у нового проекта автоматически создаются стандартные стадии (Backlog, In Progress, Implemented, Tested, Committed).
+
+Fallback (stdio, проект по умолчанию или env `KANBAN_PROJECT`):
+
+```json
+{
+  "mcpServers": {
+    "kanban-board-stdio": {
       "command": "E:/DefaultDF/Programming/Qwen/Projects/KabanBoardMCP/.venv/Scripts/python.exe",
       "args": ["E:/DefaultDF/Programming/Qwen/Projects/KabanBoardMCP/main.py", "--mcp"]
     }
   }
 }
 ```
-
-Также доступен HTTP (streamable) эндпоинт: `http://127.0.0.1:8000/mcp` при запущенном веб-сервере.
 
 ## Структура
 - `main.py` — точка входа

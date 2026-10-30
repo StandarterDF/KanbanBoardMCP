@@ -17,6 +17,8 @@ tracker.db-shm
 tmp/
 .test_out/
 *.log
+.ruff_cache/
+.pytest_cache/
 
 # IDE
 .vscode/

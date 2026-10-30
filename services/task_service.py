@@ -3,44 +3,132 @@ from datetime import datetime, timezone, timedelta
 from typing import Optional, List, Dict, Any
 from db.database import db_cursor, now, row_to_dict
 from models.schemas import Task, TaskCreate, TaskUpdate
+from services import project_service
 
 
 PRIORITY_ORDER = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3}
 
 
-def list_columns() -> List[Dict[str, Any]]:
+def _default_project_id(project_id: Optional[int] = None) -> int:
+    if project_id is not None:
+        return project_id
+    p = project_service.get_default_project()
+    return p["id"] if p else 1
+
+
+def list_columns(project_id: Optional[int] = None) -> List[Dict[str, Any]]:
+    pid = _default_project_id(project_id)
     with db_cursor() as (cur, conn):
-        cur.execute("SELECT * FROM columns ORDER BY order_index")
+        cur.execute(
+            "SELECT * FROM columns WHERE project_id = ? ORDER BY order_index, id",
+            (pid,),
+        )
         return [row_to_dict(r) for r in cur.fetchall()]
 
 
-def get_column_by_name(name: str) -> Optional[Dict[str, Any]]:
+def get_column_by_name(
+    name: str, project_id: Optional[int] = None
+) -> Optional[Dict[str, Any]]:
+    pid = _default_project_id(project_id)
     with db_cursor() as (cur, conn):
-        cur.execute("SELECT * FROM columns WHERE name = ?", (name,))
+        cur.execute(
+            "SELECT * FROM columns WHERE name = ? AND project_id = ?", (name, pid)
+        )
         r = cur.fetchone()
         return row_to_dict(r) if r else None
 
 
-def get_column_by_id(cid: int) -> Optional[Dict[str, Any]]:
+def get_column_by_id(
+    cid: int, project_id: Optional[int] = None
+) -> Optional[Dict[str, Any]]:
     with db_cursor() as (cur, conn):
-        cur.execute("SELECT * FROM columns WHERE id = ?", (cid,))
+        if project_id is not None:
+            cur.execute(
+                "SELECT * FROM columns WHERE id = ? AND project_id = ?",
+                (cid, project_id),
+            )
+        else:
+            cur.execute("SELECT * FROM columns WHERE id = ?", (cid,))
         r = cur.fetchone()
         return row_to_dict(r) if r else None
+
+
+def create_column(
+    name: str,
+    color: str = "#4a90d9",
+    order_index: Optional[int] = None,
+    project_id: Optional[int] = None,
+) -> Dict[str, Any]:
+    pid = _default_project_id(project_id)
+    if order_index is None:
+        cols = list_columns(pid)
+        order_index = max((c["order_index"] for c in cols), default=-1) + 1
+    with db_cursor() as (cur, conn):
+        cur.execute(
+            "INSERT INTO columns (project_id, name, order_index, color) VALUES (?,?,?,?)",
+            (pid, name, order_index, color),
+        )
+        cid = cur.lastrowid
+    return get_column_by_id(cid)
+
+
+def update_column(
+    col_id: int,
+    name: Optional[str] = None,
+    color: Optional[str] = None,
+    order_index: Optional[int] = None,
+) -> Optional[Dict[str, Any]]:
+    col = get_column_by_id(col_id)
+    if not col:
+        return None
+    fields = {}
+    if name is not None:
+        fields["name"] = name
+    if color is not None:
+        fields["color"] = color
+    if order_index is not None:
+        fields["order_index"] = order_index
+    if not fields:
+        return col
+    sets = ", ".join(f"{k} = ?" for k in fields)
+    params = list(fields.values()) + [col_id]
+    with db_cursor() as (cur, conn):
+        cur.execute(f"UPDATE columns SET {sets} WHERE id = ?", params)
+    return get_column_by_id(col_id)
+
+
+def column_has_tasks(col_id: int) -> bool:
+    with db_cursor() as (cur, conn):
+        cur.execute("SELECT COUNT(*) AS c FROM tasks WHERE column_id = ?", (col_id,))
+        return cur.fetchone()["c"] > 0
+
+
+def delete_column(col_id: int) -> bool:
+    if column_has_tasks(col_id):
+        raise ValueError("Column contains tasks")
+    with db_cursor() as (cur, conn):
+        cur.execute("DELETE FROM columns WHERE id = ?", (col_id,))
+        return cur.rowcount > 0
 
 
 def list_tasks(
+    project_id: Optional[int] = None,
     column_id: Optional[int] = None,
     agent_id: Optional[str] = None,
     priority: Optional[str] = None,
+    priorities: Optional[List[str]] = None,
+    categories: Optional[List[str]] = None,
+    q: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
+    pid = _default_project_id(project_id)
     with db_cursor() as (cur, conn):
         sql = """
             SELECT t.*, c.name AS column_name,
                    (SELECT COUNT(*) FROM comments cm WHERE cm.task_id = t.id) AS comment_count
             FROM tasks t LEFT JOIN columns c ON c.id = t.column_id
-            WHERE 1=1
+            WHERE t.project_id = ?
         """
-        params: list = []
+        params: list = [pid]
         if column_id is not None:
             sql += " AND t.column_id = ?"
             params.append(column_id)
@@ -50,6 +138,18 @@ def list_tasks(
         if priority is not None:
             sql += " AND t.priority = ?"
             params.append(priority)
+        if priorities:
+            placeholders = ",".join("?" for _ in priorities)
+            sql += f" AND t.priority IN ({placeholders})"
+            params.extend(priorities)
+        if categories:
+            placeholders = ",".join("?" for _ in categories)
+            sql += f" AND t.category IN ({placeholders})"
+            params.extend(categories)
+        if q:
+            sql += " AND (t.title LIKE ? OR t.description LIKE ? OR t.affected_files LIKE ?)"
+            like = f"%{q}%"
+            params.extend([like, like, like])
         sql += " ORDER BY t.id DESC"
         cur.execute(sql, params)
         return [row_to_dict(r) for r in cur.fetchall()]
@@ -77,18 +177,39 @@ def create_task(
     priority: str = "Medium",
     column_id: Optional[int] = None,
     agent_id: Optional[str] = None,
+    affected_files: str = "",
+    project_id: Optional[int] = None,
 ) -> Dict[str, Any]:
+    pid = _default_project_id(project_id)
     if column_id is None:
-        col = get_column_by_name("Backlog")
-        column_id = col["id"] if col else 1
+        col = get_column_by_name("Backlog", pid)
+        if col is None:
+            cols = list_columns(pid)
+            if not cols:
+                raise ValueError("Project has no columns")
+            col = cols[0]
+        column_id = col["id"]
+    elif get_column_by_id(column_id, project_id=pid) is None:
+        raise ValueError(f"Column {column_id} does not belong to project {pid}")
     ts = now()
     with db_cursor() as (cur, conn):
         cur.execute(
             """
-            INSERT INTO tasks (title, description, category, priority, column_id, agent_id, created_at, updated_at)
-            VALUES (?,?,?,?,?,?,?,?)
+            INSERT INTO tasks (project_id, title, description, category, priority, column_id, agent_id, affected_files, created_at, updated_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?)
         """,
-            (title, description, category, priority, column_id, agent_id, ts, ts),
+            (
+                pid,
+                title,
+                description,
+                category,
+                priority,
+                column_id,
+                agent_id,
+                affected_files or "",
+                ts,
+                ts,
+            ),
         )
         tid = cur.lastrowid
         cur.execute(
@@ -112,7 +233,14 @@ def update_task(task_id: int, data, actor: str = "user") -> Optional[Dict[str, A
     if getattr(data, "priority", None) is not None:
         fields["priority"] = data.priority
     if getattr(data, "column_id", None) is not None:
+        if get_column_by_id(data.column_id, project_id=task["project_id"]) is None:
+            raise ValueError("Target column does not belong to the task project")
         fields["column_id"] = data.column_id
+    if getattr(data, "agent_id", None) is not None:
+        fields["agent_id"] = data.agent_id
+    af = getattr(data, "affected_files", None)
+    if af is not None:
+        fields["affected_files"] = af
     if not fields:
         return task
     ts = now()
@@ -141,6 +269,8 @@ def move_task(
     task = get_task(task_id)
     if not task:
         return None
+    if get_column_by_id(target_column_id, project_id=task["project_id"]) is None:
+        raise ValueError("Target column does not belong to the task project")
     if task["column_id"] == target_column_id:
         return task
     ts = now()
@@ -178,16 +308,22 @@ def _parse_dt(s: str) -> datetime:
         return datetime.now(timezone.utc)
 
 
-def stalled_tasks(hours: int = 24) -> List[Dict[str, Any]]:
+def stalled_tasks(
+    hours: int = 24, project_id: Optional[int] = None
+) -> List[Dict[str, Any]]:
+    pid = _default_project_id(project_id)
     with db_cursor() as (cur, conn):
-        cur.execute("""
+        cur.execute(
+            """
             SELECT t.*, c.name AS column_name,
                    (SELECT COUNT(*) FROM comments cm WHERE cm.task_id = t.id) AS comment_count
             FROM tasks t LEFT JOIN columns c ON c.id = t.column_id
-            WHERE t.priority IN ('High','Critical')
+            WHERE t.project_id = ? AND t.priority IN ('High','Critical')
               AND c.name IN ('Backlog','In Progress')
             ORDER BY t.updated_at ASC
-        """)
+        """,
+            (pid,),
+        )
         rows = [row_to_dict(r) for r in cur.fetchall()]
     cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
     out = []

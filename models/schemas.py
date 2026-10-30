@@ -2,11 +2,45 @@ from typing import Optional, List
 from pydantic import BaseModel, Field
 
 
+class Project(BaseModel):
+    id: int
+    name: str
+    slug: str
+    description: Optional[str] = ""
+    created_at: str
+
+
+class ProjectCreate(BaseModel):
+    name: str
+    slug: Optional[str] = None
+    description: Optional[str] = ""
+
+
+class ProjectUpdate(BaseModel):
+    name: Optional[str] = None
+    slug: Optional[str] = None
+    description: Optional[str] = None
+
+
 class Column(BaseModel):
     id: int
+    project_id: Optional[int] = None
     name: str
     order_index: int
     color: str
+
+
+class ColumnCreate(BaseModel):
+    name: str
+    color: str = "#4a90d9"
+    order_index: Optional[int] = None
+    project_id: Optional[int] = None
+
+
+class ColumnUpdate(BaseModel):
+    name: Optional[str] = None
+    color: Optional[str] = None
+    order_index: Optional[int] = None
 
 
 class TaskCreate(BaseModel):
@@ -16,6 +50,8 @@ class TaskCreate(BaseModel):
     priority: str = "Medium"
     column_id: Optional[int] = None
     agent_id: Optional[str] = None
+    affected_files: str = ""
+    project_id: Optional[int] = None
 
 
 class TaskUpdate(BaseModel):
@@ -24,10 +60,13 @@ class TaskUpdate(BaseModel):
     category: Optional[str] = None
     priority: Optional[str] = None
     column_id: Optional[int] = None
+    agent_id: Optional[str] = None
+    affected_files: Optional[str] = None
 
 
 class Task(BaseModel):
     id: int
+    project_id: Optional[int] = None
     title: str
     description: str
     category: str
@@ -35,6 +74,7 @@ class Task(BaseModel):
     column_id: int
     column_name: Optional[str] = None
     agent_id: Optional[str] = None
+    affected_files: Optional[str] = ""
     created_at: str
     updated_at: str
     comment_count: int = 0
