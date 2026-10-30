@@ -12,22 +12,21 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    async with mcp.lifespan():
-        yield
-
-
 def create_app() -> FastAPI:
-    app = FastAPI(title="Kanban Board", lifespan=lifespan)
-    app.include_router(api_router)
-
-    # Mount MCP streamable-http endpoint at /mcp
     try:
         mcp_app = mcp.http_app(path="/")
-        app.mount("/mcp", mcp_app)
     except Exception:
-        pass
+        mcp_app = None
+
+    if mcp_app is not None:
+        app = FastAPI(title="Kanban Board", lifespan=mcp_app.lifespan)
+    else:
+        app = FastAPI(title="Kanban Board")
+
+    app.include_router(api_router)
+
+    if mcp_app is not None:
+        app.mount("/mcp", mcp_app)
 
     if os.path.isdir(STATIC_DIR):
         app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
