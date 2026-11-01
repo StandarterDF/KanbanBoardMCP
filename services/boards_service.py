@@ -17,7 +17,10 @@ from services import project_service
 
 _BOARD_SELECT = """
     SELECT b.*,
-           (SELECT COUNT(*) FROM tasks t WHERE t.board_id = b.id) AS task_count
+           CASE WHEN b.is_default = 1
+                THEN (SELECT COUNT(*) FROM tasks t WHERE t.project_id = b.project_id)
+                ELSE (SELECT COUNT(*) FROM tasks t WHERE t.board_id = b.id)
+           END AS task_count
     FROM boards b
 """
 
@@ -27,6 +30,17 @@ def _project_id(project_id: Optional[int] = None) -> int:
         return project_id
     p = project_service.get_default_project()
     return p["id"] if p else 1
+
+
+def has_additional_boards(project_id: Optional[int] = None) -> bool:
+    """True when the project has at least one non-main board."""
+    pid = _project_id(project_id)
+    with db_cursor() as (cur, conn):
+        cur.execute(
+            "SELECT COUNT(*) AS c FROM boards WHERE project_id = ? AND is_default = 0",
+            (pid,),
+        )
+        return cur.fetchone()["c"] > 0
 
 
 def list_boards(project_id: Optional[int] = None) -> List[Dict[str, Any]]:

@@ -1,4 +1,5 @@
 import sqlite3
+import json
 from datetime import datetime, timezone, timedelta
 from typing import Optional, List, Dict, Any
 from db.database import db_cursor, now, row_to_dict
@@ -8,10 +9,84 @@ from models.schemas import (
     TaskUpdate,
     normalize_priority,
 )
-from services import project_service, history_service, category_service, boards_service
+from services import (
+    project_service,
+    history_service,
+    category_service,
+    boards_service,
+    comment_service,
+)
 
 
 PRIORITY_ORDER = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3}
+
+# Comment summary is computed in SQL so reading a task list stays one query
+# instead of one extra query per task (N+1).
+_COMMENT_SUMMARY_SQL = """
+    (SELECT COUNT(*) FROM comments cm WHERE cm.task_id = t.id) AS comment_count,
+    (SELECT MAX(cm.id) FROM comments cm WHERE cm.task_id = t.id) AS last_comment_id,
+    (SELECT MAX(cm.created_at) FROM comments cm WHERE cm.task_id = t.id) AS last_comment_at,
+    (SELECT cm.author FROM comments cm WHERE cm.task_id = t.id
+        ORDER BY cm.id DESC LIMIT 1) AS last_comment_author,
+    (SELECT substr(cm.text, 1, 280) FROM comments cm WHERE cm.task_id = t.id
+        ORDER BY cm.id DESC LIMIT 1) AS last_comment_text,
+    (SELECT LENGTH(cm.text) FROM comments cm WHERE cm.task_id = t.id
+        ORDER BY cm.id DESC LIMIT 1) AS last_comment_length,
+    (SELECT cm.kind FROM comments cm WHERE cm.task_id = t.id
+        ORDER BY cm.id DESC LIMIT 1) AS last_comment_kind
+"""
+
+
+def _parse_criteria(raw) -> List[Dict[str, Any]]:
+    """Normalize the stored acceptance criteria JSON into a list of dicts."""
+    if raw is None:
+        return []
+    data = raw
+    if isinstance(raw, str):
+        try:
+            data = json.loads(raw) if raw.strip() else []
+        except Exception:
+            return []
+    if not isinstance(data, list):
+        return []
+    out = []
+    for item in data:
+        if isinstance(item, str):
+            out.append(
+                {
+                    "text": item.strip(),
+                    "done": False,
+                    "evidence": "",
+                    "checked_at": None,
+                    "checked_by": None,
+                }
+            )
+        elif isinstance(item, dict):
+            text = str(item.get("text") or "").strip()
+            if not text:
+                continue
+            out.append(
+                {
+                    "text": text,
+                    "done": bool(item.get("done")),
+                    "evidence": str(item.get("evidence") or ""),
+                    "checked_at": item.get("checked_at"),
+                    "checked_by": item.get("checked_by"),
+                }
+            )
+    return out
+
+
+def _dump_criteria(criteria: List[Dict[str, Any]]) -> str:
+    return json.dumps(criteria, ensure_ascii=False, default=str)
+
+
+def attach_criteria(task: Dict[str, Any]) -> Dict[str, Any]:
+    criteria = _parse_criteria(task.get("acceptance_criteria"))
+    task["acceptance"] = criteria
+    task["criteria_total"] = len(criteria)
+    task["criteria_done"] = sum(1 for c in criteria if c.get("done"))
+    return task
 
 
 def _default_project_id(project_id: Optional[int] = None) -> int:
@@ -62,6 +137,30 @@ def _stage_navigation(task: Dict[str, Any]) -> Dict[str, Any]:
         "previous": previous,
         "next": following,
     }
+
+
+def get_stage_navigation(task: Dict[str, Any]) -> Dict[str, Any]:
+    """Public wrapper around stage navigation (used by MCP for allowed moves)."""
+    return _stage_navigation(task)
+
+
+def active_stage_ids(project_id: Optional[int] = None) -> List[int]:
+    """Return ids of the active stages: the first two columns by position.
+
+    Stages are positional (``order_index, id``), never name-based, so projects
+    with localized column names (``Бэклог``/``В работе``) work the same way as
+    the English defaults.
+    """
+    cols = list_columns(project_id)
+    return [c["id"] for c in cols[:2]]
+
+
+def active_work_column(project_id: Optional[int] = None) -> Optional[Dict[str, Any]]:
+    """Return the ``In Progress``-style stage: the second column by position."""
+    cols = list_columns(project_id)
+    if not cols:
+        return None
+    return cols[1] if len(cols) > 1 else cols[0]
 
 
 def ensure_adjacent_move(task: Dict[str, Any], target_column_id: int) -> None:
@@ -166,18 +265,23 @@ def list_tasks(
     categories: Optional[List[str]] = None,
     q: Optional[str] = None,
     board_id: Optional[int] = None,
+    updated_since: Optional[str] = None,
+    order_by: str = "id",
+    include_archived: bool = False,
 ) -> List[Dict[str, Any]]:
     pid = _default_project_id(project_id)
     with db_cursor() as (cur, conn):
-        sql = """
+        sql = f"""
             SELECT t.*, c.name AS column_name, b.name AS board_name,
-                   (SELECT COUNT(*) FROM comments cm WHERE cm.task_id = t.id) AS comment_count
+                   {_COMMENT_SUMMARY_SQL}
             FROM tasks t
             LEFT JOIN columns c ON c.id = t.column_id
             LEFT JOIN boards b ON b.id = t.board_id
             WHERE t.project_id = ?
         """
         params: list = [pid]
+        if not include_archived:
+            sql += " AND COALESCE(t.archived, 0) = 0"
         if board_id is not None:
             sql += " AND t.board_id = ?"
             params.append(board_id)
@@ -202,17 +306,23 @@ def list_tasks(
             sql += " AND (t.title LIKE ? OR t.description LIKE ? OR t.affected_files LIKE ?)"
             like = f"%{q}%"
             params.extend([like, like, like])
-        sql += " ORDER BY t.id DESC"
+        if updated_since:
+            sql += " AND t.updated_at >= ?"
+            params.append(updated_since)
+        if order_by == "activity":
+            sql += " ORDER BY COALESCE(t.updated_at, '') DESC, t.id DESC"
+        else:
+            sql += " ORDER BY t.id DESC"
         cur.execute(sql, params)
-        return [row_to_dict(r) for r in cur.fetchall()]
+        return [attach_criteria(row_to_dict(r)) for r in cur.fetchall()]
 
 
 def get_task(task_id: int) -> Optional[Dict[str, Any]]:
     with db_cursor() as (cur, conn):
         cur.execute(
-            """
+            f"""
             SELECT t.*, c.name AS column_name, b.name AS board_name,
-                   (SELECT COUNT(*) FROM comments cm WHERE cm.task_id = t.id) AS comment_count
+                   {_COMMENT_SUMMARY_SQL}
             FROM tasks t
             LEFT JOIN columns c ON c.id = t.column_id
             LEFT JOIN boards b ON b.id = t.board_id
@@ -221,7 +331,11 @@ def get_task(task_id: int) -> Optional[Dict[str, Any]]:
             (task_id,),
         )
         r = cur.fetchone()
-        return row_to_dict(r) if r else None
+        if not r:
+            return None
+        task = attach_criteria(row_to_dict(r))
+    task["review_comment"] = comment_service.get_last_review_comment(task_id)
+    return task
 
 
 def create_task(
@@ -234,6 +348,8 @@ def create_task(
     affected_files: str = "",
     project_id: Optional[int] = None,
     board_id: Optional[int] = None,
+    require_board: bool = False,
+    acceptance_criteria=None,
 ) -> Dict[str, Any]:
     pid = _default_project_id(project_id)
     category = category_service.resolve_category(pid, category)
@@ -247,6 +363,20 @@ def create_task(
         board = boards_service.get_board(board_id)
         if board is None or board["project_id"] != pid:
             raise ValueError(f"Board {board_id} does not belong to project {pid}")
+    if (
+        require_board
+        and board.get("is_default")
+        and boards_service.has_additional_boards(pid)
+    ):
+        names = ", ".join(
+            b["name"]
+            for b in boards_service.list_boards(pid)
+            if not b.get("is_default")
+        )
+        raise ValueError(
+            "Choose a task board: the main board shows all project tasks and "
+            f"cannot be a creation target. Available boards: {names}."
+        )
     if column_id is None:
         col = get_column_by_name("Backlog", pid)
         if col is None:
@@ -258,11 +388,12 @@ def create_task(
     elif get_column_by_id(column_id, project_id=pid) is None:
         raise ValueError(f"Column {column_id} does not belong to project {pid}")
     ts = now()
+    criteria_json = _dump_criteria(_parse_criteria(acceptance_criteria))
     with db_cursor() as (cur, conn):
         cur.execute(
             """
-            INSERT INTO tasks (project_id, board_id, title, description, category, priority, column_id, agent_id, affected_files, created_at, updated_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?)
+            INSERT INTO tasks (project_id, board_id, title, description, category, priority, column_id, agent_id, affected_files, acceptance_criteria, created_at, updated_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
         """,
             (
                 pid,
@@ -274,6 +405,7 @@ def create_task(
                 column_id,
                 agent_id,
                 affected_files or "",
+                criteria_json,
                 ts,
                 ts,
             ),
@@ -408,34 +540,59 @@ def _parse_dt(s: str) -> datetime:
 
 
 def stalled_tasks(
-    hours: int = 24, project_id: Optional[int] = None
+    hours: int = 24,
+    project_id: Optional[int] = None,
+    board_id: Optional[int] = None,
+    priorities: Optional[List[str]] = None,
+    stage_ids: Optional[List[int]] = None,
 ) -> List[Dict[str, Any]]:
+    """Return tasks that had no activity for ``hours`` in the active stages.
+
+    ``stage_ids`` overrides the default active stages (first two columns).
+    ``priorities`` limits the result; ``None`` means every priority.
+    """
     pid = _default_project_id(project_id)
+    if stage_ids is None:
+        stage_ids = active_stage_ids(pid)
+    if not stage_ids:
+        return []
+    placeholders = ",".join("?" for _ in stage_ids)
+    sql = f"""
+        SELECT t.*, c.name AS column_name, b.name AS board_name,
+               {_COMMENT_SUMMARY_SQL}
+        FROM tasks t
+        LEFT JOIN columns c ON c.id = t.column_id
+        LEFT JOIN boards b ON b.id = t.board_id
+        WHERE t.project_id = ? AND t.column_id IN ({placeholders})
+          AND COALESCE(t.archived, 0) = 0
+    """
+    params: List[Any] = [pid, *stage_ids]
+    if board_id is not None:
+        sql += " AND t.board_id = ?"
+        params.append(board_id)
+    if priorities:
+        ph = ",".join("?" for _ in priorities)
+        sql += f" AND t.priority IN ({ph})"
+        params.extend(priorities)
+    sql += " ORDER BY t.updated_at ASC"
     with db_cursor() as (cur, conn):
-        cur.execute(
-            """
-            SELECT t.*, c.name AS column_name,
-                   (SELECT COUNT(*) FROM comments cm WHERE cm.task_id = t.id) AS comment_count
-            FROM tasks t LEFT JOIN columns c ON c.id = t.column_id
-            WHERE t.project_id = ? AND t.priority IN ('High','Critical')
-              AND c.name IN ('Backlog','In Progress')
-            ORDER BY t.updated_at ASC
-        """,
-            (pid,),
-        )
+        cur.execute(sql, params)
         rows = [row_to_dict(r) for r in cur.fetchall()]
     cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
-    out = []
-    for r in rows:
-        if _parse_dt(r["updated_at"]) <= cutoff:
-            out.append(r)
-    return out
+    return [r for r in rows if _parse_dt(r["updated_at"]) <= cutoff]
 
 
-def analyze_next(tasks: List[Dict[str, Any]]) -> Dict[str, Any]:
-    candidates = [
-        t for t in tasks if t.get("column_name") in ("Backlog", "In Progress")
-    ]
+def analyze_next(
+    tasks: List[Dict[str, Any]], active_ids: Optional[List[int]] = None
+) -> Dict[str, Any]:
+    """Suggest the next task, preferring the active stages when known."""
+    if active_ids:
+        candidates = [t for t in tasks if t.get("column_id") in active_ids]
+    else:
+        # Backwards-compatible fallback for callers without project stages.
+        candidates = [
+            t for t in tasks if t.get("column_name") in ("Backlog", "In Progress")
+        ]
     if not candidates:
         candidates = tasks
     candidates.sort(
@@ -448,3 +605,263 @@ def analyze_next(tasks: List[Dict[str, Any]]) -> Dict[str, Any]:
         "recommendation": t,
         "reason": f"Priority {t['priority']}, status {t.get('column_name')}.",
     }
+
+
+def review_stage_id(project_id: Optional[int] = None) -> Optional[int]:
+    """Return the review stage: the third column by position.
+
+    Falls back to the last column when a project has fewer than three stages.
+    """
+    cols = list_columns(project_id)
+    if not cols:
+        return None
+    return cols[2]["id"] if len(cols) >= 3 else cols[-1]["id"]
+
+
+def list_review_tasks(
+    project_id: Optional[int] = None, board_id: Optional[int] = None
+) -> List[Dict[str, Any]]:
+    """Tasks waiting for the owner's review, oldest activity first."""
+    pid = _default_project_id(project_id)
+    cid = review_stage_id(pid)
+    if cid is None:
+        return []
+    tasks = list_tasks(project_id=pid, column_id=cid, board_id=board_id)
+    tasks.sort(key=lambda t: t.get("updated_at") or "")
+    return tasks
+
+
+def reject_task(
+    task_id: int,
+    reason: str,
+    actor: str = "user",
+    author: Optional[str] = None,
+    return_to_column_id: Optional[int] = None,
+    images: Optional[List[str]] = None,
+) -> Optional[Dict[str, Any]]:
+    """Reject a task: count the rejection, move it back, and comment why.
+
+    By default the task moves one stage back (the previous column). The
+    rejection reason is required and becomes a comment, so agents see it.
+    """
+    reason = (reason or "").strip()
+    if not reason:
+        raise ValueError("Rejection reason is required")
+    task = get_task(task_id)
+    if not task:
+        return None
+    if task.get("archived"):
+        raise ValueError("Archived task cannot be rejected")
+    if return_to_column_id is None:
+        nav = _stage_navigation(task)
+        previous = nav["previous"]
+        if previous is None:
+            raise ValueError("Cannot reject a task from the first stage")
+        return_to_column_id = previous["id"]
+    if get_column_by_id(return_to_column_id, project_id=task["project_id"]) is None:
+        raise ValueError("Target column does not belong to the task project")
+    ts = now()
+    with db_cursor() as (cur, conn):
+        cur.execute(
+            """UPDATE tasks
+               SET rejections = COALESCE(rejections, 0) + 1, updated_at = ?
+               WHERE id = ?""",
+            (ts, task_id),
+        )
+        history_service.record_event(
+            task_id,
+            "rejected",
+            old_value=str(task["column_id"]),
+            new_value=str(return_to_column_id),
+            actor=actor,
+            note=reason,
+            created_at=ts,
+            cur=cur,
+        )
+    if return_to_column_id != task["column_id"]:
+        move_task(task_id, return_to_column_id, actor=actor, note=reason)
+    comment_service.add_comment(
+        task_id,
+        author or ("Agent:" + actor if actor.startswith("agent:") else actor),
+        f"Отклонено: {reason}",
+        touch_task=False,
+        kind="reject",
+        images=images,
+    )
+    return get_task(task_id)
+
+
+def verify_task(
+    task_id: int,
+    actor: str = "user",
+    note: str = "",
+    move_to_next: bool = True,
+    author: Optional[str] = None,
+    images: Optional[List[str]] = None,
+) -> Optional[Dict[str, Any]]:
+    """Mark a task as verified by the owner and optionally move it forward."""
+    task = get_task(task_id)
+    if not task:
+        return None
+    if task.get("archived"):
+        raise ValueError("Archived task cannot be verified")
+    note = (note or "").strip()
+    ts = now()
+    with db_cursor() as (cur, conn):
+        cur.execute(
+            "UPDATE tasks SET verified_at = ?, verified_by = ?, updated_at = ? WHERE id = ?",
+            (ts, actor, ts, task_id),
+        )
+        history_service.record_event(
+            task_id,
+            "verified",
+            old_value=None,
+            new_value=note or None,
+            actor=actor,
+            note=note or None,
+            created_at=ts,
+            cur=cur,
+        )
+    if move_to_next:
+        nav = _stage_navigation(task)
+        following = nav["next"]
+        if following is not None:
+            move_task(task_id, following["id"], actor=actor, note=note or None)
+    comment_service.add_comment(
+        task_id,
+        author or ("Agent:" + actor if actor.startswith("agent:") else actor),
+        f"Проверено: {note}" if note else "Проверено.",
+        touch_task=False,
+        kind="verify",
+        images=images,
+    )
+    return get_task(task_id)
+
+
+def archive_task(task_id: int, actor: str = "user") -> Optional[Dict[str, Any]]:
+    """Hide a task from the board without deleting it."""
+    task = get_task(task_id)
+    if not task:
+        return None
+    ts = now()
+    with db_cursor() as (cur, conn):
+        cur.execute(
+            "UPDATE tasks SET archived = 1, archived_at = ?, updated_at = ? WHERE id = ?",
+            (ts, ts, task_id),
+        )
+        history_service.record_event(
+            task_id,
+            "archived",
+            old_value=None,
+            new_value=None,
+            actor=actor,
+            created_at=ts,
+            cur=cur,
+        )
+    return get_task(task_id)
+
+
+def restore_task(task_id: int, actor: str = "user") -> Optional[Dict[str, Any]]:
+    """Bring an archived task back to the board."""
+    task = get_task(task_id)
+    if not task:
+        return None
+    ts = now()
+    with db_cursor() as (cur, conn):
+        cur.execute(
+            "UPDATE tasks SET archived = 0, archived_at = NULL, updated_at = ? WHERE id = ?",
+            (ts, task_id),
+        )
+        history_service.record_event(
+            task_id,
+            "restored",
+            old_value=None,
+            new_value=None,
+            actor=actor,
+            created_at=ts,
+            cur=cur,
+        )
+    return get_task(task_id)
+
+
+def set_acceptance_criteria(
+    task_id: int, criteria, actor: str = "user"
+) -> Optional[Dict[str, Any]]:
+    """Replace a task's acceptance criteria, preserving marks by exact text."""
+    task = get_task(task_id)
+    if not task:
+        return None
+    old_by_text = {
+        c["text"]: c for c in _parse_criteria(task.get("acceptance_criteria"))
+    }
+    normalized = []
+    for item in _parse_criteria(criteria):
+        previous = old_by_text.get(item["text"])
+        if previous:
+            item["done"] = bool(item.get("done") or previous.get("done"))
+            item["evidence"] = item.get("evidence") or previous.get("evidence") or ""
+            item["checked_at"] = previous.get("checked_at")
+            item["checked_by"] = previous.get("checked_by")
+        normalized.append(item)
+    ts = now()
+    with db_cursor() as (cur, conn):
+        cur.execute(
+            "UPDATE tasks SET acceptance_criteria = ?, updated_at = ? WHERE id = ?",
+            (_dump_criteria(normalized), ts, task_id),
+        )
+        history_service.record_event(
+            task_id,
+            "criteria_updated",
+            old_value=None,
+            new_value=f"{len(normalized)} criteria",
+            actor=actor,
+            created_at=ts,
+            cur=cur,
+        )
+    return get_task(task_id)
+
+
+def check_criterion(
+    task_id: int,
+    index: int,
+    evidence: str = "",
+    done: bool = True,
+    actor: str = "user",
+) -> Optional[Dict[str, Any]]:
+    """Mark acceptance criterion ``index`` (1-based) as done or not done.
+
+    Completing a criterion requires evidence; this keeps "done" verifiable.
+    """
+    task = get_task(task_id)
+    if not task:
+        return None
+    criteria = _parse_criteria(task.get("acceptance_criteria"))
+    if index < 1 or index > len(criteria):
+        raise ValueError(
+            f"Criterion index {index} is out of range (1..{len(criteria)})"
+        )
+    evidence = (evidence or "").strip()
+    if done and not evidence:
+        raise ValueError("Evidence is required to complete an acceptance criterion")
+    item = criteria[index - 1]
+    item["done"] = bool(done)
+    item["evidence"] = evidence
+    item["checked_at"] = now() if done else None
+    item["checked_by"] = actor if done else None
+    ts = now()
+    with db_cursor() as (cur, conn):
+        cur.execute(
+            "UPDATE tasks SET acceptance_criteria = ?, updated_at = ? WHERE id = ?",
+            (_dump_criteria(criteria), ts, task_id),
+        )
+        history_service.record_event(
+            task_id,
+            "criteria_checked",
+            old_value=None,
+            new_value=item["text"],
+            actor=actor,
+            note=evidence or None,
+            created_at=ts,
+            cur=cur,
+        )
+    return get_task(task_id)

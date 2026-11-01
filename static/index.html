@@ -7,7 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/static/style.css?v=20261031-8">
+<link rel="stylesheet" href="/static/style.css?v=20261101-8">
 </head>
 <body>
 <header class="topbar">
@@ -32,6 +32,16 @@
       <button class="ms-btn" type="button">Приоритеты ▾</button>
       <div class="ms-panel"></div>
     </div>
+    <label class="archive-toggle" title="Показывать архивные задачи">
+      <input type="checkbox" id="showArchived" /> Архив
+    </label>
+    <div class="view-controls">
+      <select id="viewSelect" title="Сохранённые виды">
+        <option value="">Все задачи</option>
+      </select>
+      <button id="btnSaveView" class="icon-btn" type="button" title="Сохранить текущий вид">💾</button>
+      <button id="btnDeleteView" class="icon-btn" type="button" title="Удалить выбранный вид">🗑</button>
+    </div>
   </div>
   <div class="topbar-actions">
     <button id="btnNewTask" class="btn btn-primary">+ Задача</button>
@@ -46,6 +56,14 @@
 </div>
 
 <main class="board" id="board"></main>
+
+<div class="bulk-bar" id="bulkBar" style="display:none">
+  <span class="bulk-count" id="bulkCount">Выбрано: 0</span>
+  <select id="bulkColumn"></select>
+  <button class="btn btn-primary" id="btnBulkMove" type="button">Перенести</button>
+  <button class="btn btn-ghost" id="btnBulkArchive" type="button">В архив</button>
+  <button class="btn btn-ghost" id="btnBulkClear" type="button">Снять выбор</button>
+</div>
 
 <!-- Task Modal -->
 <div class="modal-overlay" id="taskModal">
@@ -64,6 +82,7 @@
 
         <div class="modal-tabs">
           <button class="modal-tab active" id="btnTabDesc" type="button">Описание</button>
+          <button class="modal-tab" id="btnTabCriteria" type="button">Критерии <span id="criteriaBadge"></span></button>
           <button class="modal-tab" id="btnTabHistory" type="button">История</button>
         </div>
 
@@ -71,6 +90,7 @@
           <div class="desc-toolbar">
             <button class="tab active" id="btnEditDesc" type="button">Редактировать</button>
             <button class="tab" id="btnPreviewDesc" type="button">Предпросмотр</button>
+            <button class="tab" id="btnTaskTemplate" type="button" title="Вставить шаблон задачи">Шаблон</button>
           </div>
           <textarea id="taskDesc" rows="8" placeholder="Описание / критерии приёмки (Markdown)"></textarea>
           <div id="taskDescPreview" class="markdown-body" style="display:none"></div>
@@ -79,8 +99,23 @@
             <div class="comments-list" id="commentsList"></div>
             <div class="comment-form">
               <textarea id="commentText" rows="1" placeholder="Написать комментарий... (Shift+Enter — новая строка)"></textarea>
+              <button type="button" class="icon-btn attach-btn" id="btnAttachComment" title="Прикрепить изображение">📎</button>
+              <input type="file" id="commentImageInput" accept="image/*" multiple hidden />
               <button class="btn btn-primary" id="btnAddComment">Отправить</button>
             </div>
+            <div class="attach-previews" id="commentImagePreviews"></div>
+          </div>
+        </div>
+
+        <div class="task-pane" id="taskCriteriaPane" style="display:none">
+          <div class="criteria-head">
+            <span id="criteriaProgress">0/0</span>
+            <span class="muted">Отмечать можно только с доказательством (сборка, тест, ручная проверка).</span>
+          </div>
+          <div class="criteria-list" id="criteriaList"></div>
+          <div class="criteria-add">
+            <input type="text" id="newCriterionText" placeholder="Новый критерий приёмки" />
+            <button type="button" class="btn btn-ghost" id="btnAddCriterion">Добавить</button>
           </div>
         </div>
 
@@ -92,6 +127,14 @@
         <div class="side-card">
           <label>Статус</label>
           <div class="status-list" id="statusList"></div>
+        </div>
+        <div class="side-card review-card" id="reviewCard" style="display:none">
+          <label>Проверка</label>
+          <div class="review-meta" id="reviewMeta">—</div>
+          <div class="review-actions">
+            <button type="button" class="btn btn-primary" id="btnVerifyTask">Проверить</button>
+            <button type="button" class="btn btn-danger" id="btnRejectTask">Отклонить</button>
+          </div>
         </div>
         <div class="side-card">
           <label>Приоритет</label>
@@ -131,9 +174,37 @@
       </aside>
     </div>
     <div class="modal-footer">
+      <button class="btn btn-ghost" id="btnArchiveTask" type="button">В архив</button>
       <button class="btn btn-danger" id="btnDeleteTask" type="button">Удалить</button>
       <span id="saveStatus" class="save-status" aria-live="polite"></span>
       <button class="btn btn-primary" id="btnSaveTask" type="button">Сохранить</button>
+    </div>
+  </div>
+</div>
+
+<!-- Review Modal (verify / reject) -->
+<div class="modal-overlay" id="reviewModal">
+  <div class="modal modal-sm review-modal">
+    <div class="modal-header">
+      <h2 id="reviewModalTitle">Проверка</h2>
+      <button class="icon-btn" id="reviewModalClose" type="button">✕</button>
+    </div>
+    <div class="modal-body">
+      <p class="review-modal-hint" id="reviewModalHint"></p>
+      <label>
+        <span id="reviewNoteLabel">Комментарий</span>
+        <textarea id="reviewNote" rows="1" placeholder="Опишите, что проверено или что нужно исправить..."></textarea>
+      </label>
+      <div class="attach-row">
+        <button type="button" class="btn btn-ghost btn-sm" id="btnAttachReview">📎 Прикрепить изображение</button>
+        <input type="file" id="reviewImageInput" accept="image/*" multiple hidden />
+      </div>
+      <div class="attach-previews" id="reviewImagePreviews"></div>
+      <div class="review-modal-error" id="reviewModalError"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" id="btnCancelReview" type="button">Отмена</button>
+      <button class="btn btn-primary" id="btnConfirmReview" type="button">Подтвердить</button>
     </div>
   </div>
 </div>
@@ -161,6 +232,12 @@
   </div>
 </div>
 
+<!-- Fullscreen image viewer -->
+<div class="image-viewer" id="imageViewer" aria-hidden="true">
+  <button class="image-viewer-close" id="imageViewerClose" type="button" title="Закрыть">✕</button>
+  <img id="imageViewerImg" alt="" />
+</div>
+
 <!-- Settings Drawer -->
 <div class="drawer-overlay" id="settingsOverlay"></div>
 <aside class="drawer" id="settingsDrawer">
@@ -171,6 +248,6 @@
   <div class="drawer-body" id="settingsBody"></div>
 </aside>
 
-<script src="/static/app.js?v=20261031-8"></script>
+<script src="/static/app.js?v=20261101-9"></script>
 </body>
 </html>

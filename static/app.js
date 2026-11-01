@@ -11,9 +11,13 @@ let columns = [];
 let categories = [];
 let dirty = false;
 let currentTaskId = null;
+let currentTask = null;
 let descMode = "edit";
 let fullscreen = false;
 let historyEvents = [];
+let selectedTaskIds = new Set();
+let commentAttachments = [];
+let reviewAttachments = [];
 
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => document.querySelectorAll(sel);
@@ -169,7 +173,7 @@ function renderBoards() {
     chip.className = "board-tab" + (b.id === currentBoardId ? " active" : "");
     chip.dataset.boardId = b.id;
     chip.title = b.is_default
-      ? "Главная доска проекта (удалить нельзя)"
+      ? "Главная доска: все задачи проекта (удалить нельзя)"
       : "Доска проекта";
 
     const name = document.createElement("span");
@@ -216,6 +220,8 @@ async function switchBoard(id) {
   if (id === currentBoardId) return;
   if (!boards.find(b => b.id === id)) return;
   currentBoardId = id;
+  selectedTaskIds.clear();
+  updateBulkBar();
   localStorage.setItem(boardStorageKey(currentProjectId), String(id));
   renderBoards();
   await loadTasks();
@@ -274,6 +280,8 @@ async function switchProject(id) {
   currentProjectId = p.id;
   currentProjectSlug = p.slug;
   currentBoardId = null;
+  selectedTaskIds.clear();
+  updateBulkBar();
   localStorage.setItem("activeProjectSlug", p.slug);
   renderProjectSelect();
   await loadBoards();
@@ -281,6 +289,7 @@ async function switchProject(id) {
   await loadColumns();
   await loadTasks();
   await renderFilters();
+  renderViews();
 }
 
 async function createProject() {
@@ -315,6 +324,7 @@ async function deleteProject() {
   await loadColumns();
   await loadTasks();
   await renderFilters();
+  renderViews();
   renderProjectSelect();
 }
 
@@ -367,21 +377,40 @@ function populateCategorySelect(selected, allowLegacy) {
   if (!sel.value && sel.options.length) sel.selectedIndex = 0;
 }
 
-function populateBoardSelect(selected) {
+function populateBoardSelect(selected, forCreate = false) {
   const sel = $("#taskBoard");
   sel.innerHTML = "";
-  boards.forEach(board => {
+  const additional = boards.filter(b => !b.is_default);
+  const mainBoards = boards.filter(b => b.is_default);
+  // The main board is an aggregate view. While the project has additional
+  // boards, new tasks must target one of them; the main board is not offered.
+  const available = forCreate && additional.length
+    ? additional
+    : [...additional, ...mainBoards];
+
+  if (forCreate && additional.length) {
+    const placeholder = document.createElement("option");
+    placeholder.value = "";
+    placeholder.textContent = "Выберите доску";
+    placeholder.disabled = true;
+    placeholder.selected = true;
+    sel.appendChild(placeholder);
+  }
+
+  available.forEach(board => {
     const opt = document.createElement("option");
     opt.value = board.id;
-    opt.textContent = board.name;
+    opt.textContent = board.is_default ? `${board.name} (без группы)` : board.name;
     sel.appendChild(opt);
   });
-  const desired = selected ?? currentBoardId;
+
+  let desired = selected;
+  if (desired == null && !(forCreate && additional.length)) desired = currentBoardId;
   if (desired != null) {
     const match = Array.from(sel.options).find(opt => parseInt(opt.value, 10) === desired);
     if (match) sel.value = match.value;
   }
-  if (!sel.value && sel.options.length) sel.selectedIndex = 0;
+  if (!forCreate && !sel.value && sel.options.length) sel.selectedIndex = 0;
 }
 
 function columnHasTasks(colId) {
@@ -443,7 +472,10 @@ async function deleteColumn() {
 /* ---------- Tasks ---------- */
 async function loadTasks() {
   const boardQuery = currentBoardId != null ? `&board_id=${currentBoardId}` : "";
-  allTasks = await api(`/tasks?project_id=${currentProjectId}${boardQuery}`);
+  const archivedQuery = $("#showArchived") && $("#showArchived").checked
+    ? "&include_archived=true"
+    : "";
+  allTasks = await api(`/tasks?project_id=${currentProjectId}${boardQuery}${archivedQuery}`);
   applyFilters();
 }
 
@@ -460,6 +492,10 @@ function applyFilters() {
     if (prios.length && !prios.includes(t.priority)) return false;
     return true;
   });
+  const visible = new Set(tasks.map(t => t.id));
+  for (const id of Array.from(selectedTaskIds)) {
+    if (!visible.has(id)) selectedTaskIds.delete(id);
+  }
   renderBoard();
 }
 
@@ -532,6 +568,8 @@ function sortedColumnTasks(columnId) {
 
 function renderBoard() {
   const board = $("#board");
+  const activeBoard = boards.find(b => b.id === currentBoardId) || null;
+  const mainBoardActive = Boolean(activeBoard && activeBoard.is_default);
   // Polling re-renders the whole board; keep the user's scroll position.
   const scrollState = captureBoardScroll();
   board.innerHTML = "";
@@ -654,14 +692,36 @@ function renderBoard() {
       card.className = "card";
       card.draggable = true;
       card.dataset.taskId = t.id;
+      const boardBadge = mainBoardActive && t.board_id !== currentBoardId
+        ? `<span class="badge board-badge">${escapeHtml(t.board_name || "—")}</span>`
+        : "";
+      const criteriaBadge = t.criteria_total
+        ? `<span class="badge criteria-badge">✓ ${t.criteria_done}/${t.criteria_total}</span>`
+        : "";
+      const rejectionBadge = t.rejections
+        ? `<span class="badge rejection-badge">↺ ${t.rejections}</span>`
+        : "";
+      const archiveBadge = t.archived
+        ? `<span class="badge archive-badge">архив</span>`
+        : "";
       card.innerHTML = `
+        <input type="checkbox" class="card-select" title="Выбрать задачу" ${selectedTaskIds.has(t.id) ? "checked" : ""} />
         <div class="card-title">${escapeHtml(t.title)}</div>
         <div class="card-meta">
           <span class="badge priority-${t.priority}">${t.priority}</span>
           <span class="badge cat-badge" style="--cat-color:${escapeHtml(categoryColor(t.category))}">${escapeHtml(t.category)}</span>
+          ${boardBadge}${criteriaBadge}${rejectionBadge}${archiveBadge}
         </div>
         <div class="card-comments">💬 ${t.comment_count || 0}</div>
       `;
+      if (t.archived) card.classList.add("archived");
+      if (selectedTaskIds.has(t.id)) card.classList.add("selected");
+      const selectBox = card.querySelector(".card-select");
+      selectBox.addEventListener("click", (e) => e.stopPropagation());
+      selectBox.addEventListener("change", (e) => {
+        e.stopPropagation();
+        toggleTaskSelection(t.id, selectBox.checked);
+      });
       card.addEventListener("dragstart", (e) => {
         draggedTaskId = t.id;
         card.classList.add("dragging");
@@ -673,11 +733,21 @@ function renderBoard() {
         card.classList.remove("dragging");
         clearDropTargets();
       });
-      card.addEventListener("click", () => openTaskModal(t.id));
+      card.addEventListener("click", (e) => {
+        if (e.target.closest(".card-select")) return;
+        if (e.ctrlKey || e.metaKey) {
+          toggleTaskSelection(t.id, !selectedTaskIds.has(t.id));
+          return;
+        }
+        openTaskModal(t.id);
+      });
       body.appendChild(card);
     });
     board.appendChild(colEl);
   });
+
+  renderBulkColumns();
+  updateBulkBar();
 
   // add column card
   const addCol = document.createElement("div");
@@ -718,10 +788,284 @@ function closeMenus() {
 /* ---------- Task modal ---------- */
 function setTaskTab(tab) {
   const isDesc = tab === "desc";
+  const isCriteria = tab === "criteria";
   $("#taskDescPane").style.display = isDesc ? "" : "none";
-  $("#taskHistoryPane").style.display = isDesc ? "none" : "";
+  $("#taskCriteriaPane").style.display = isCriteria ? "" : "none";
+  $("#taskHistoryPane").style.display = !isDesc && !isCriteria ? "" : "none";
   $("#btnTabDesc").classList.toggle("active", isDesc);
-  $("#btnTabHistory").classList.toggle("active", !isDesc);
+  $("#btnTabCriteria").classList.toggle("active", isCriteria);
+  $("#btnTabHistory").classList.toggle("active", !isDesc && !isCriteria);
+}
+
+let pendingCriteria = [];
+
+function criteriaItems() {
+  if (currentTask) return currentTask.acceptance || [];
+  return pendingCriteria;
+}
+
+function renderCriteria(task) {
+  const items = task ? task.acceptance || [] : pendingCriteria;
+  const done = items.filter(c => c.done).length;
+  $("#criteriaProgress").textContent = `${done}/${items.length}`;
+  $("#criteriaBadge").textContent = items.length ? `${done}/${items.length}` : "";
+  const list = $("#criteriaList");
+  list.innerHTML = "";
+  if (!items.length) {
+    list.innerHTML = "<div class='muted criteria-empty'>Критериев пока нет. Добавьте пункты, которые доказывают готовность.</div>";
+    return;
+  }
+  items.forEach((c, i) => {
+    const row = document.createElement("div");
+    row.className = "criterion" + (c.done ? " done" : "");
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = !!c.done;
+    cb.disabled = !currentTaskId;
+    cb.title = currentTaskId ? "Отметить с доказательством" : "Сохраните задачу, чтобы отмечать критерии";
+    cb.addEventListener("change", () => toggleCriterion(i + 1, cb.checked));
+    const text = document.createElement("div");
+    text.className = "criterion-text";
+    text.innerHTML =
+      `<div>${escapeHtml(c.text)}</div>` +
+      (c.evidence ? `<div class="criterion-evidence">${escapeHtml(c.evidence)}</div>` : "");
+    const del = document.createElement("button");
+    del.type = "button";
+    del.className = "icon-btn criterion-delete";
+    del.textContent = "×";
+    del.title = "Удалить критерий";
+    del.addEventListener("click", () => removeCriterion(i));
+    row.append(cb, text, del);
+    list.appendChild(row);
+  });
+}
+
+async function toggleCriterion(index, done) {
+  if (!currentTaskId) return;
+  let evidence = "";
+  if (done) {
+    evidence = prompt("Доказательство (вывод сборки, теста или ручной проверки):", "");
+    if (evidence === null) { renderCriteria(currentTask); return; }
+    evidence = evidence.trim();
+    if (!evidence) {
+      alert("Без доказательства критерий отметить нельзя");
+      renderCriteria(currentTask);
+      return;
+    }
+  }
+  try {
+    const t = await api(`/tasks/${currentTaskId}/criteria/${index}/check`, {
+      method: "POST",
+      body: JSON.stringify({ evidence, done }),
+    });
+    currentTask = t;
+    renderCriteria(t);
+    await loadTaskHistory(currentTaskId);
+    await loadTasks();
+  } catch (err) { alert(err.message); renderCriteria(currentTask); }
+}
+
+async function saveCriteriaTexts(texts) {
+  if (currentTaskId) {
+    const t = await api(`/tasks/${currentTaskId}/criteria`, {
+      method: "PUT",
+      body: JSON.stringify({ criteria: texts }),
+    });
+    currentTask = t;
+    renderCriteria(t);
+    await loadTasks();
+  } else {
+    pendingCriteria = texts.map(text => ({ text, done: false, evidence: "" }));
+    renderCriteria(null);
+  }
+}
+
+function removeCriterion(index) {
+  const texts = criteriaItems()
+    .filter((_, i) => i !== index)
+    .map(c => c.text);
+  saveCriteriaTexts(texts).catch(err => alert(err.message));
+}
+
+function addCriterion() {
+  const input = $("#newCriterionText");
+  const text = (input.value || "").trim();
+  if (!text) return;
+  const texts = criteriaItems().map(c => c.text).concat(text);
+  saveCriteriaTexts(texts).then(() => {
+    input.value = "";
+  }).catch(err => alert(err.message));
+}
+
+function renderReviewCard(task) {
+  const card = $("#reviewCard");
+  if (!task) { card.style.display = "none"; return; }
+  const position = columnPosition(task.column_id);
+  const isReview = columns.length >= 3 && position === 2;
+  card.style.display = isReview ? "" : "none";
+  const parts = [];
+  if (task.rejections) parts.push(`Отклонений: ${task.rejections}`);
+  if (task.verified_at) parts.push(`Проверено: ${formatDateTime(task.verified_at)}`);
+  const review = task.review_comment;
+  if (review) {
+    parts.push(review.kind === "reject"
+      ? `Последнее решение: отклонено ${formatDateTime(review.created_at)}`
+      : `Последнее решение: принято ${formatDateTime(review.created_at)}`);
+  }
+  $("#reviewMeta").textContent = parts.join(" · ") || "Ожидает проверки";
+}
+
+function updateArchiveButton(task) {
+  const btn = $("#btnArchiveTask");
+  if (!task) { btn.style.display = "none"; return; }
+  btn.style.display = "";
+  btn.dataset.archived = task.archived ? "1" : "0";
+  btn.textContent = task.archived ? "Восстановить" : "В архив";
+}
+
+async function refreshTaskAfterAction(t) {
+  currentTask = t;
+  renderStatusButtons(t.column_id);
+  renderReviewCard(t);
+  renderCriteria(t);
+  updateArchiveButton(t);
+  $("#taskUpdated").textContent = formatDateTime(t.updated_at);
+  await Promise.all([loadComments(t.id), loadTaskHistory(t.id)]);
+  await loadTasks();
+  await loadBoards();
+}
+
+async function verifyCurrentTask() {
+  openReviewModal("verify");
+}
+
+async function rejectCurrentTask() {
+  openReviewModal("reject");
+}
+
+const REVIEW_MODES = {
+  verify: {
+    title: "Проверить задачу",
+    hint: "Задача будет отмечена как проверенная и перейдёт в следующую колонку.",
+    label: "Комментарий к проверке (необязательно)",
+    placeholder: "Что проверено, что стоит учесть дальше...",
+    confirm: "Проверить",
+    confirmClass: "btn btn-primary",
+    optional: true,
+  },
+  reject: {
+    title: "Отклонить задачу",
+    hint: "Задача вернётся на предыдущий этап, а причина попадёт в комментарии.",
+    label: "Причина отклонения (обязательно)",
+    placeholder: "Что не так и что нужно исправить...",
+    confirm: "Отклонить",
+    confirmClass: "btn btn-danger",
+    optional: false,
+  },
+};
+
+let reviewMode = "verify";
+
+function openReviewModal(mode) {
+  if (!currentTaskId) return;
+  reviewMode = REVIEW_MODES[mode] ? mode : "verify";
+  const cfg = REVIEW_MODES[reviewMode];
+  $("#reviewModalTitle").textContent = cfg.title;
+  $("#reviewModalHint").textContent = cfg.hint;
+  $("#reviewNoteLabel").textContent = cfg.label;
+  const note = $("#reviewNote");
+  note.value = "";
+  note.placeholder = cfg.placeholder;
+  $("#reviewModalError").textContent = "";
+  reviewAttachments = [];
+  renderReviewAttachments();
+  const confirmBtn = $("#btnConfirmReview");
+  confirmBtn.textContent = cfg.confirm;
+  confirmBtn.className = cfg.confirmClass;
+  $("#reviewModal").classList.add("active");
+  note.style.height = "";
+  requestAnimationFrame(() => autoResizeTextarea(note, window.innerHeight * 0.45));
+  note.focus();
+}
+
+function closeReviewModal() {
+  $("#reviewModal").classList.remove("active");
+  $("#reviewNote").value = "";
+  $("#reviewModalError").textContent = "";
+  reviewAttachments = [];
+  renderReviewAttachments();
+}
+
+async function submitReview() {
+  if (!currentTaskId) return;
+  const cfg = REVIEW_MODES[reviewMode];
+  const note = ($("#reviewNote").value || "").trim();
+  const errorBox = $("#reviewModalError");
+  if (!cfg.optional && !note) {
+    errorBox.textContent = "Укажите причину отклонения.";
+    $("#reviewNote").focus();
+    return;
+  }
+  errorBox.textContent = "";
+  if (attachmentsUploading(reviewAttachments)) {
+    errorBox.textContent = "Дождитесь загрузки изображений.";
+    return;
+  }
+  if (attachmentsFailed(reviewAttachments)) {
+    errorBox.textContent = "Уберите изображения, которые не удалось загрузить.";
+    return;
+  }
+  const images = attachmentUrls(reviewAttachments);
+  const confirmBtn = $("#btnConfirmReview");
+  confirmBtn.disabled = true;
+  try {
+    const t = reviewMode === "verify"
+      ? await api(`/tasks/${currentTaskId}/verify`, {
+          method: "POST",
+          body: JSON.stringify({ note, move_to_next: true, images }),
+        })
+      : await api(`/tasks/${currentTaskId}/reject`, {
+          method: "POST",
+          body: JSON.stringify({ reason: note, images }),
+        });
+    closeReviewModal();
+    await refreshTaskAfterAction(t);
+  } catch (err) {
+    errorBox.textContent = err.message;
+  } finally {
+    confirmBtn.disabled = false;
+  }
+}
+
+async function toggleArchiveCurrentTask() {
+  if (!currentTaskId) return;
+  const archived = $("#btnArchiveTask").dataset.archived === "1";
+  try {
+    const t = await api(`/tasks/${currentTaskId}/${archived ? "restore" : "archive"}`, {
+      method: "POST",
+    });
+    await refreshTaskAfterAction(t);
+  } catch (err) { alert(err.message); }
+}
+
+const TASK_TEMPLATE = [
+  "**Цель:**",
+  "",
+  "**Требования:**",
+  "1. ",
+  "",
+  "**Затронутые файлы:**",
+  "",
+  "**Как проверить:**",
+  "1. ",
+].join("\n");
+
+function insertTaskTemplate() {
+  const area = $("#taskDesc");
+  if (area.value.trim() && !confirm("Заменить текущее описание шаблоном?")) return;
+  area.value = TASK_TEMPLATE;
+  renderPreview();
+  dirty = true;
 }
 
 function renderStatusButtons(taskColumnId) {
@@ -792,6 +1136,7 @@ async function openTaskModal(taskId) {
 
   if (taskId) {
     const t = await api(`/tasks/${taskId}`);
+    currentTask = t;
     $("#taskTitle").value = t.title;
     $("#taskDesc").value = t.description || "";
     setSelectValue($("#taskPriority"), t.priority);
@@ -810,13 +1155,19 @@ async function openTaskModal(taskId) {
     $("#taskLastMove").textContent = "—";
     renderStatusButtons(t.column_id);
     renderPreview();
+    renderCriteria(t);
+    renderReviewCard(t);
+    updateArchiveButton(t);
     await Promise.all([loadComments(taskId), loadTaskHistory(taskId)]);
   } else {
+    currentTask = null;
+    pendingCriteria = [];
     $("#taskTitle").value = "";
     $("#taskDesc").value = "";
     $("#taskPriority").value = "Medium";
     populateCategorySelect(null, false);
-    populateBoardSelect(currentBoardId);
+    const activeBoard = boards.find(b => b.id === currentBoardId);
+    populateBoardSelect(activeBoard && !activeBoard.is_default ? currentBoardId : null, true);
     $("#taskAgent").value = "";
     $("#taskAffectedFiles").value = "";
     $("#modalTitle").textContent = "Новая задача";
@@ -830,6 +1181,9 @@ async function openTaskModal(taskId) {
     $("#taskLastMove").textContent = "—";
     $("#historyList").innerHTML = "<div class='history-empty'>История появится после создания задачи.</div>";
     renderStatusButtons(null);
+    renderCriteria(null);
+    renderReviewCard(null);
+    updateArchiveButton(null);
   }
 
   $("#taskModal").classList.add("active");
@@ -840,7 +1194,220 @@ function closeModal() {
   $("#taskModal").classList.remove("active");
   if (fullscreen) toggleFullscreen(false);
   currentTaskId = null;
+  currentTask = null;
+  pendingCriteria = [];
   dirty = false;
+  commentAttachments = [];
+  renderCommentAttachments();
+}
+
+const COMMENT_KIND_LABELS = { verify: "Принято", reject: "Отклонено" };
+
+/* ---------- Image attachments (comments / reviews) ---------- */
+const IMAGE_MAX_DIMENSION = 2200;
+const IMAGE_QUALITY = 0.88;
+const IMAGE_SOURCE_LIMIT = 25 * 1024 * 1024;
+
+function readFileAsDataURL(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = () => reject(new Error("Не удалось прочитать файл"));
+    reader.readAsDataURL(file);
+  });
+}
+
+function loadImageElement(src) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error("Не удалось открыть изображение"));
+    img.src = src;
+  });
+}
+
+// Shrinks large screenshots/photos in the browser before upload.
+async function fileToDataURL(file) {
+  if (!file.type.startsWith("image/")) throw new Error("Это не изображение");
+  if (file.size > IMAGE_SOURCE_LIMIT) throw new Error("Файл больше 25 МБ");
+  const original = await readFileAsDataURL(file);
+  const keepOriginal = file.size <= 1.2 * 1024 * 1024
+    && /^image\/(png|jpeg|gif|webp|bmp)$/i.test(file.type);
+  if (keepOriginal) return original;
+  try {
+    const img = await loadImageElement(original);
+    const scale = Math.min(1, IMAGE_MAX_DIMENSION / Math.max(img.width, img.height));
+    const width = Math.max(1, Math.round(img.width * scale));
+    const height = Math.max(1, Math.round(img.height * scale));
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return original;
+    // JPEG has no alpha: paint a white background instead of black.
+    if (file.type === "image/jpeg" || file.type === "image/jpg") {
+      ctx.fillStyle = "#fff";
+      ctx.fillRect(0, 0, width, height);
+    }
+    ctx.drawImage(img, 0, 0, width, height);
+    let out = canvas.toDataURL("image/webp", IMAGE_QUALITY);
+    if (!out.startsWith("data:image/webp")) {
+      out = canvas.toDataURL("image/jpeg", IMAGE_QUALITY);
+    }
+    return out.length < original.length ? out : original;
+  } catch (e) {
+    return original;
+  }
+}
+
+async function uploadImageFile(file) {
+  const dataUrl = await fileToDataURL(file);
+  const res = await api("/uploads", {
+    method: "POST",
+    body: JSON.stringify({ data_url: dataUrl, filename: file.name }),
+  });
+  return { url: res.url, preview: dataUrl };
+}
+
+function renderAttachments(selector, list, rerender) {
+  const box = $(selector);
+  if (!box) return;
+  box.innerHTML = "";
+  list.forEach((item) => {
+    const el = document.createElement("div");
+    el.className = `attach-preview ${item.status}`;
+
+    if (item.preview || item.url) {
+      const img = document.createElement("img");
+      img.src = item.preview || item.url;
+      img.alt = item.name || "Изображение";
+      img.style.cursor = "zoom-in";
+      img.title = "Открыть на весь экран";
+      img.addEventListener("click", () => openImageViewer(item.url || item.preview));
+      el.appendChild(img);
+    }
+    if (item.status === "uploading") {
+      const bar = document.createElement("div");
+      bar.className = "attach-progress";
+      el.appendChild(bar);
+      el.title = "Загрузка...";
+    }
+    if (item.status === "error") {
+      const err = document.createElement("div");
+      err.className = "attach-failed";
+      err.textContent = item.error || "Ошибка";
+      el.appendChild(err);
+      el.title = item.error || "Не удалось загрузить";
+    }
+
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "attach-remove";
+    remove.textContent = "×";
+    remove.title = "Убрать изображение";
+    remove.addEventListener("click", () => {
+      const idx = list.findIndex(a => a.id === item.id);
+      if (idx >= 0) list.splice(idx, 1);
+      rerender();
+    });
+    el.appendChild(remove);
+    box.appendChild(el);
+  });
+}
+
+function renderCommentAttachments() {
+  renderAttachments("#commentImagePreviews", commentAttachments, renderCommentAttachments);
+}
+
+function renderReviewAttachments() {
+  renderAttachments("#reviewImagePreviews", reviewAttachments, renderReviewAttachments);
+}
+
+async function addAttachmentFiles(files, list, rerender) {
+  const images = Array.from(files || []).filter(f => f && f.type.startsWith("image/"));
+  for (const file of images) {
+    const item = {
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      name: file.name,
+      status: "uploading",
+      preview: "",
+      url: "",
+    };
+    list.push(item);
+    rerender();
+    try {
+      const uploaded = await uploadImageFile(file);
+      item.preview = uploaded.preview;
+      item.url = uploaded.url;
+      item.status = "ready";
+    } catch (err) {
+      item.status = "error";
+      item.error = err.message;
+    }
+    rerender();
+  }
+}
+
+function attachmentUrls(list) {
+  return list.filter(a => a.status === "ready" && a.url).map(a => a.url);
+}
+
+function attachmentsUploading(list) {
+  return list.some(a => a.status === "uploading");
+}
+
+function attachmentsFailed(list) {
+  return list.some(a => a.status === "error");
+}
+
+function pasteImagesInto(e, list, rerender) {
+  const clipboard = e.clipboardData;
+  if (!clipboard) return;
+  const items = Array.from(clipboard.items || []);
+  let files = items
+    .filter(it => it.kind === "file" && it.type.startsWith("image/"))
+    .map(it => it.getAsFile())
+    .filter(Boolean);
+  if (!files.length && clipboard.files && clipboard.files.length) {
+    files = Array.from(clipboard.files).filter(f => f && f.type.startsWith("image/"));
+  }
+  if (!files.length) return;
+  e.preventDefault();
+  addAttachmentFiles(files, list, rerender);
+}
+
+function autoResizeTextarea(el, maxHeight = 420) {
+  if (!el) return;
+  el.style.height = "auto";
+  const height = Math.min(el.scrollHeight, maxHeight);
+  el.style.height = `${height}px`;
+  el.style.overflowY = el.scrollHeight > maxHeight ? "auto" : "hidden";
+}
+
+function commentImagesHtml(images) {
+  const list = Array.isArray(images) ? images.filter(u => typeof u === "string" && u) : [];
+  if (!list.length) return "";
+  return `<div class="comment-images">${list.map(url =>
+    `<a href="${escapeHtml(url)}" data-image-viewer="${escapeHtml(url)}" `
+    + `title="Открыть на весь экран">`
+    + `<img src="${escapeHtml(url)}" alt="Вложение" loading="lazy"></a>`).join("")}</div>`;
+}
+
+function openImageViewer(url) {
+  if (!url) return;
+  const viewer = $("#imageViewer");
+  $("#imageViewerImg").src = url;
+  viewer.classList.add("active");
+  viewer.setAttribute("aria-hidden", "false");
+  document.body.classList.add("image-viewer-open");
+}
+
+function closeImageViewer() {
+  const viewer = $("#imageViewer");
+  viewer.classList.remove("active");
+  viewer.setAttribute("aria-hidden", "true");
+  $("#imageViewerImg").removeAttribute("src");
+  document.body.classList.remove("image-viewer-open");
 }
 
 async function loadComments(taskId) {
@@ -849,12 +1416,20 @@ async function loadComments(taskId) {
   const comments = await api(`/tasks/${taskId}/comments`);
   list.innerHTML = "";
   comments.forEach(c => {
+    const kind = c.kind || "message";
     const div = document.createElement("div");
-    div.className = "comment-item";
-    div.innerHTML = `<div class="comment-author">${escapeHtml(c.author)}</div><div class="comment-text">${escapeHtml(c.text)}</div>`;
+    div.className = "comment-item" + (kind !== "message" ? ` comment-${kind}` : "");
+    const label = COMMENT_KIND_LABELS[kind]
+      ? `<span class="comment-kind comment-kind-${kind}">${COMMENT_KIND_LABELS[kind]}</span>`
+      : "";
+    div.innerHTML =
+      `<div class="comment-head"><span class="comment-author">${escapeHtml(c.author)}</span>${label}</div>` +
+      (c.text ? `<div class="comment-text">${escapeHtml(c.text)}</div>` : "") +
+      commentImagesHtml(c.images);
     list.appendChild(div);
   });
   if (!comments.length) list.innerHTML = "<div class='muted'>Нет комментариев</div>";
+  list.scrollTop = list.scrollHeight;
 }
 
 /* ---------- Task history ---------- */
@@ -975,49 +1550,353 @@ function trackDirty() {
   });
 }
 
+/* ---------- Markdown ---------- */
+// Small dependency-free renderer: headings (ATX + setext), fenced code, lists
+// (nested, ordered, task lists), tables, blockquotes, rules, links, images,
+// autolinks and inline emphasis. Everything is HTML-escaped before rendering.
 function renderMarkdown(text) {
-  const lines = (text || "").split("\n");
+  const lines = String(text ?? "").replace(/\r\n?/g, "\n").split("\n");
+  return renderBlocks(lines.map((t, idx) => ({ text: t, line: idx })));
+}
+
+function leadingIndent(s) {
+  return (s.match(/^\s*/)[0] || "").replace(/\t/g, "    ").length;
+}
+
+function matchListItem(line) {
+  const m = line.match(/^(\s*)([-+*]|\d{1,9}[.)])\s+([\s\S]*)$/);
+  if (!m) return null;
+  const indent = m[1].replace(/\t/g, "    ").length;
+  const ordered = /\d/.test(m[2][0]);
+  return {
+    indent,
+    ordered,
+    marker: m[2],
+    number: ordered ? parseInt(m[2], 10) : null,
+    content: m[3],
+  };
+}
+
+function splitTableRow(line) {
+  let s = line.trim();
+  if (s.startsWith("|")) s = s.slice(1);
+  if (s.endsWith("|") && !s.endsWith("\\|")) s = s.slice(0, -1);
+  const cells = [];
+  let cur = "";
+  for (let k = 0; k < s.length; k++) {
+    if (s[k] === "\\" && s[k + 1] === "|") { cur += "|"; k++; continue; }
+    if (s[k] === "|") { cells.push(cur.trim()); cur = ""; continue; }
+    cur += s[k];
+  }
+  cells.push(cur.trim());
+  return cells;
+}
+
+function isTableDelimiter(line) {
+  if (!line || !line.includes("-") || !line.includes("|")) return false;
+  const cells = splitTableRow(line);
+  return cells.length > 0 && cells.every(c => /^:?-{1,}:?$/.test(c));
+}
+
+function tableAlign(cell) {
+  const left = cell.startsWith(":");
+  const right = cell.endsWith(":");
+  if (left && right) return "center";
+  if (right) return "right";
+  if (left) return "left";
+  return "";
+}
+
+function alignAttr(align) {
+  return align ? ` style="text-align:${align}"` : "";
+}
+
+function isTableStart(rows, i) {
+  return i + 1 < rows.length
+    && rows[i].text.includes("|")
+    && isTableDelimiter(rows[i + 1].text);
+}
+
+function isBlockStart(rows, i, first) {
+  const line = rows[i].text;
+  const trimmed = line.trim();
+  if (!trimmed) return true;
+  if (/^\s{0,3}(`{3,}|~{3,})/.test(line)) return true;
+  if (/^#{1,6}\s+/.test(trimmed)) return true;
+  if (/^\s{0,3}>/.test(line)) return true;
+  if (/^ {0,3}((\*\s*){3,}|(-\s*){3,}|(_\s*){3,})$/.test(line)) return true;
+  if (matchListItem(line)) return true;
+  if (isTableStart(rows, i)) return true;
+  if (!first && i + 1 < rows.length && /^ {0,3}(=+|-+)\s*$/.test(rows[i + 1].text)) return true;
+  return false;
+}
+
+function renderBlocks(rows) {
   let html = "";
-  let inCode = false;
-  let codeBuf = [];
-  lines.forEach((line, idx) => {
-    if (line.trim().startsWith("```")) {
-      if (inCode) { html += `<pre><code>${escapeHtml(codeBuf.join("\n"))}</code></pre>`; codeBuf = []; inCode = false; }
-      else inCode = true;
-      return;
+  let i = 0;
+  while (i < rows.length) {
+    const line = rows[i].text;
+    const trimmed = line.trim();
+
+    if (trimmed === "") { i++; continue; }
+
+    // Fenced code block (``` or ~~~ with optional language)
+    const fence = line.match(/^\s*(`{3,}|~{3,})\s*([\w+#.-]*)\s*$/);
+    if (fence) {
+      const marker = fence[1][0];
+      const minLen = fence[1].length;
+      const lang = fence[2] || "";
+      const buf = [];
+      i++;
+      while (i < rows.length) {
+        const closing = rows[i].text.trim();
+        if (closing.length >= minLen && new RegExp(`^${marker}+$`).test(closing)) { i++; break; }
+        buf.push(rows[i].text);
+        i++;
+      }
+      const cls = lang ? ` class="language-${escapeHtml(lang)}"` : "";
+      html += `<pre><code${cls}>${escapeHtml(buf.join("\n"))}</code></pre>`;
+      continue;
     }
-    if (inCode) { codeBuf.push(line); return; }
-    const cb = line.match(/^[-*]\s*\[([ xX])\]\s*(.*)$/);
-    if (cb) {
-      const checked = cb[1].toLowerCase() === "x";
-      const content = inlineMd(cb[2]);
-      html += `<label class="md-checkbox"><input type="checkbox" data-line="${idx}" ${checked ? "checked" : ""}> <span>${content}</span></label>`;
-      return;
+
+    // Setext heading (Title / ===== or -----)
+    if (i + 1 < rows.length && /^ {0,3}(=+|-+)\s*$/.test(rows[i + 1].text)) {
+      const level = rows[i + 1].text.trim()[0] === "=" ? 1 : 2;
+      html += `<h${level}>${inlineMd(trimmed)}</h${level}>`;
+      i += 2;
+      continue;
     }
-    if (/^###\s/.test(line)) { html += `<h3>${inlineMd(line.slice(4))}</h3>`; return; }
-    if (/^##\s/.test(line)) { html += `<h2>${inlineMd(line.slice(3))}</h2>`; return; }
-    if (/^#\s/.test(line)) { html += `<h1>${inlineMd(line.slice(2))}</h1>`; return; }
-    if (/^[-*]\s/.test(line)) { html += `<ul><li>${inlineMd(line.slice(2))}</li></ul>`; return; }
-    if (line.trim() === "") { html += `<br>`; return; }
-    html += `<p>${inlineMd(line)}</p>`;
-  });
-  if (inCode) html += `<pre><code>${escapeHtml(codeBuf.join("\n"))}</code></pre>`;
+
+    // Horizontal rule
+    if (/^ {0,3}((\*\s*){3,}|(-\s*){3,}|(_\s*){3,})$/.test(line)) {
+      html += "<hr>";
+      i++;
+      continue;
+    }
+
+    // ATX heading (# .. ######)
+    const heading = line.match(/^(#{1,6})\s+(.+?)\s*#*\s*$/);
+    if (heading) {
+      const level = heading[1].length;
+      html += `<h${level}>${inlineMd(heading[2])}</h${level}>`;
+      i++;
+      continue;
+    }
+
+    // Table
+    if (isTableStart(rows, i)) {
+      const header = splitTableRow(line);
+      const aligns = splitTableRow(rows[i + 1].text).map(tableAlign);
+      i += 2;
+      let body = "";
+      while (
+        i < rows.length
+        && rows[i].text.trim() !== ""
+        && rows[i].text.includes("|")
+        && !isBlockStart(rows, i, true)
+      ) {
+        const cells = splitTableRow(rows[i].text);
+        body += `<tr>${header.map((_, k) =>
+          `<td${alignAttr(aligns[k])}>${inlineMd(cells[k] ?? "")}</td>`).join("")}</tr>`;
+        i++;
+      }
+      html += `<div class="md-table-wrap"><table><thead><tr>${header.map((c, k) =>
+        `<th${alignAttr(aligns[k])}>${inlineMd(c)}</th>`).join("")}</tr></thead>`
+        + `<tbody>${body}</tbody></table></div>`;
+      continue;
+    }
+
+    // Blockquote
+    if (/^\s{0,3}>/.test(line)) {
+      const inner = [];
+      while (i < rows.length) {
+        if (/^\s{0,3}>/.test(rows[i].text)) {
+          inner.push({ text: rows[i].text.replace(/^\s{0,3}>\s?/, ""), line: rows[i].line });
+          i++;
+          continue;
+        }
+        // keep blank lines that are still inside the quote
+        if (rows[i].text.trim() === "" && i + 1 < rows.length && /^\s{0,3}>/.test(rows[i + 1].text)) {
+          inner.push({ text: "", line: rows[i].line });
+          i++;
+          continue;
+        }
+        break;
+      }
+      html += `<blockquote>${renderBlocks(inner)}</blockquote>`;
+      continue;
+    }
+
+    // Lists (bullet, ordered, nested, task lists)
+    if (matchListItem(line)) {
+      const list = parseList(rows, i);
+      html += list.html;
+      i = list.next;
+      continue;
+    }
+
+    // Paragraph: consecutive plain lines, hard-wrapped with <br>
+    const para = [];
+    while (i < rows.length) {
+      if (para.length && isBlockStart(rows, i, false)) break;
+      para.push(rows[i].text);
+      i++;
+    }
+    if (para.length) html += `<p>${inlineMd(para.join("\n"))}</p>`;
+  }
   return html;
 }
 
-function inlineMd(s) {
-  let t = escapeHtml(s);
-  t = t.replace(/`([^`]+)`/g, "<code>$1</code>");
-  t = t.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
-  t = t.replace(/\*([^*]+)\*/g, "<em>$1</em>");
+function parseList(rows, start) {
+  const first = matchListItem(rows[start].text);
+  const baseIndent = first.indent;
+  const ordered = first.ordered;
+  let i = start;
+  const items = [];
+
+  while (i < rows.length) {
+    const m = matchListItem(rows[i].text);
+    if (!m || m.indent !== baseIndent || m.ordered !== ordered) break;
+
+    const itemRows = [{ text: m.content, line: rows[i].line }];
+    i++;
+
+    while (i < rows.length) {
+      const raw = rows[i].text;
+      if (raw.trim() === "") {
+        let j = i + 1;
+        while (j < rows.length && rows[j].text.trim() === "") j++;
+        if (j < rows.length) {
+          const nm = matchListItem(rows[j].text);
+          const ind = leadingIndent(rows[j].text);
+          if ((nm && nm.indent > baseIndent) || (!nm && ind > baseIndent)) {
+            itemRows.push({ text: "", line: rows[i].line });
+            i++;
+            continue;
+          }
+        }
+        break;
+      }
+      const nm = matchListItem(raw);
+      const ind = leadingIndent(raw);
+      if (nm && nm.indent > baseIndent) {
+        itemRows.push({ text: raw.slice(Math.min(ind, baseIndent + 2)), line: rows[i].line });
+        i++;
+        continue;
+      }
+      if (!nm && ind > baseIndent) {
+        itemRows.push({ text: raw.slice(Math.min(ind, baseIndent + 2)), line: rows[i].line });
+        i++;
+        continue;
+      }
+      break;
+    }
+
+    items.push(renderListItem(itemRows));
+  }
+
+  const tag = ordered ? "ol" : "ul";
+  const startAttr = ordered && first.number > 1 ? ` start="${first.number}"` : "";
+  return { html: `<${tag}${startAttr}>${items.join("")}</${tag}>`, next: i };
+}
+
+function renderListItem(itemRows) {
+  const first = itemRows[0];
+  const task = first.text.match(/^\[([ xX])\]\s+([\s\S]*)$/);
+  if (task) {
+    const checked = task[1].toLowerCase() === "x";
+    let content;
+    if (itemRows.length === 1) {
+      content = inlineMd(task[2]);
+    } else {
+      const copy = itemRows.slice();
+      copy[0] = { text: task[2], line: first.line };
+      content = renderBlocks(copy);
+    }
+    return `<li class="md-task-item"><label class="md-checkbox">`
+      + `<input type="checkbox" data-line="${first.line}"${checked ? " checked" : ""}>`
+      + `<span>${content}</span></label></li>`;
+  }
+  if (itemRows.length === 1) return `<li>${inlineMd(first.text)}</li>`;
+  return `<li>${renderBlocks(itemRows)}</li>`;
+}
+
+function safeUrl(url) {
+  const raw = String(url ?? "")
+    .trim()
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'");
+  if (/^(?:javascript|vbscript|data):/i.test(raw)) return "#";
+  return escapeHtml(raw);
+}
+
+function mdEmphasis(t) {
+  t = t.replace(/\*\*\*([^*\n]+)\*\*\*/g, "<strong><em>$1</em></strong>");
+  t = t.replace(/___([^_\n]+)___/g, "<strong><em>$1</em></strong>");
+  t = t.replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>");
+  t = t.replace(/__([^_\n]+)__/g, "<strong>$1</strong>");
+  t = t.replace(/\*([^*\n]+)\*/g, "<em>$1</em>");
+  t = t.replace(/(^|[\s(])_([^_\n]+)_(?=$|[\s.,;:!?)\]])/g, "$1<em>$2</em>");
+  t = t.replace(/~~([^~\n]+)~~/g, "<del>$1</del>");
+  t = t.replace(/==([^=\n]+)==/g, "<mark>$1</mark>");
   return t;
+}
+
+function inlineMd(src) {
+  const tokens = [];
+  const stash = (html) => `\u0001${tokens.push(html) - 1}\u0001`;
+  let t = String(src ?? "");
+
+  // Backslash escapes
+  t = t.replace(/\\([\\`*_{}\[\]()#+\-.!>~|])/g, (m, ch) => stash(escapeHtml(ch)));
+
+  // Inline code
+  t = t.replace(/(`+)([\s\S]*?)\1/g, (m, ticks, code) =>
+    stash(`<code>${escapeHtml(code.replace(/^ | $/g, ""))}</code>`));
+
+  // Images (before links, so ![alt](src) is not treated as a link)
+  t = t.replace(/!\[([^\]]*)\]\(\s*([^\s)]+)(?:\s+["']([^"']*)["'])?\s*\)/g,
+    (m, alt, url) => stash(`<img src="${safeUrl(url)}" alt="${escapeHtml(alt)}">`));
+
+  // Links
+  t = t.replace(/\[([^\]]+)\]\(\s*([^\s)]+)(?:\s+["']([^"']*)["'])?\s*\)/g,
+    (m, text, url, title) => {
+      const ttl = title ? ` title="${escapeHtml(title)}"` : "";
+      return stash(`<a href="${safeUrl(url)}"${ttl} target="_blank" rel="noopener noreferrer">`
+        + `${mdEmphasis(escapeHtml(text))}</a>`);
+    });
+
+  // Escape the remaining source, then format
+  t = escapeHtml(t);
+  t = mdEmphasis(t);
+
+  // Autolinks <https://...> / <mailto:...>
+  t = t.replace(/&lt;((?:https?:\/\/|mailto:)[^\s&<>]+)&gt;/g, (m, url) =>
+    `<a href="${safeUrl(url)}" target="_blank" rel="noopener noreferrer">${url}</a>`);
+
+  // Bare URLs
+  t = t.replace(/(^|[\s(])(https?:\/\/[^\s<"']+)/g, (m, pre, url) => {
+    let trail = "";
+    const trailMatch = url.match(/[.,;:!?)]+$/);
+    if (trailMatch) {
+      trail = trailMatch[0];
+      url = url.slice(0, -trail.length);
+    }
+    return `${pre}<a href="${safeUrl(url)}" target="_blank" rel="noopener noreferrer">${url}</a>${trail}`;
+  });
+
+  t = t.replace(/\n/g, "<br>");
+  return t.replace(/\u0001(\d+)\u0001/g, (m, idx) => tokens[Number(idx)] ?? "");
 }
 
 function toggleCheckboxInDesc(lineIndex) {
   const ta = $("#taskDesc");
   const lines = ta.value.split("\n");
   const line = lines[lineIndex];
-  const m = line.match(/^([-*]\s*\[)([ xX])(\]\s*.*)$/);
+  const m = line.match(/^(\s*(?:[-*+]|\d{1,9}[.)])\s*\[)([ xX])(\]\s*[\s\S]*)$/);
   if (m) {
     const newMark = m[2].toLowerCase() === "x" ? " " : "x";
     lines[lineIndex] = m[1] + newMark + m[3];
@@ -1042,17 +1921,26 @@ async function saveTask() {
   const id = $("#taskId").value;
   const statusList = $("#statusList");
   const columnId = parseInt(statusList.dataset.selected || $("#taskColumn")?.value);
+  const boardValue = $("#taskBoard").value;
   const payload = {
     title: $("#taskTitle").value.trim(),
     description: $("#taskDesc").value,
     priority: $("#taskPriority").value,
     category: $("#taskCategory").value,
-    board_id: parseInt($("#taskBoard").value, 10) || currentBoardId,
+    board_id: boardValue ? parseInt(boardValue, 10) : null,
     column_id: columnId,
     agent_id: $("#taskAgent").value.trim() || null,
     affected_files: $("#taskAffectedFiles").value,
   };
+  if (!id) {
+    payload.acceptance_criteria = pendingCriteria.map(c => ({
+      text: c.text,
+      done: Boolean(c.done),
+      evidence: c.evidence || "",
+    }));
+  }
   if (!payload.title) { alert("Укажите название"); return; }
+  if (!payload.board_id) { alert("Выберите доску для задачи"); return; }
   try {
     if (id) {
       await api(`/tasks/${id}`, { method: "PUT", body: JSON.stringify(payload) });
@@ -1177,6 +2065,182 @@ function buildMulti(id, options, label, colors) {
     e.stopPropagation();
     container.classList.toggle("open");
   };
+}
+
+/* ---------- Bulk selection ---------- */
+function renderBulkColumns() {
+  const sel = $("#bulkColumn");
+  if (!sel) return;
+  const previous = sel.value;
+  sel.innerHTML = "";
+  columns.forEach(col => {
+    const opt = document.createElement("option");
+    opt.value = String(col.id);
+    opt.textContent = col.name;
+    sel.appendChild(opt);
+  });
+  if (previous && Array.from(sel.options).some(o => o.value === previous)) {
+    sel.value = previous;
+  }
+}
+
+function updateBulkBar() {
+  const bar = $("#bulkBar");
+  if (!bar) return;
+  const count = selectedTaskIds.size;
+  bar.style.display = count ? "flex" : "none";
+  const label = $("#bulkCount");
+  if (label) label.textContent = `Выбрано: ${count}`;
+}
+
+function toggleTaskSelection(id, selected) {
+  if (selected) selectedTaskIds.add(id);
+  else selectedTaskIds.delete(id);
+  const card = document.querySelector(`.card[data-task-id="${id}"]`);
+  if (card) {
+    card.classList.toggle("selected", selected);
+    const box = card.querySelector(".card-select");
+    if (box) box.checked = selected;
+  }
+  updateBulkBar();
+}
+
+function clearSelection() {
+  selectedTaskIds.clear();
+  document.querySelectorAll(".card.selected").forEach(card => card.classList.remove("selected"));
+  document.querySelectorAll(".card-select").forEach(box => { box.checked = false; });
+  updateBulkBar();
+}
+
+async function bulkMoveSelected() {
+  const columnId = parseInt($("#bulkColumn").value, 10);
+  if (!columnId || !selectedTaskIds.size) return;
+  const ids = Array.from(selectedTaskIds);
+  let moved = 0;
+  const failed = [];
+  for (const id of ids) {
+    try {
+      await api(`/tasks/${id}/move`, {
+        method: "POST",
+        body: JSON.stringify({ column_id: columnId }),
+      });
+      moved += 1;
+    } catch (err) {
+      failed.push(`#${id}: ${err.message}`);
+    }
+  }
+  clearSelection();
+  await loadTasks();
+  alert(
+    `Перенесено: ${moved}` +
+    (failed.length ? `\nНе удалось (${failed.length}):\n${failed.slice(0, 8).join("\n")}` : "")
+  );
+}
+
+async function bulkArchiveSelected() {
+  if (!selectedTaskIds.size) return;
+  if (!confirm(`Архивировать выбранные задачи (${selectedTaskIds.size})?`)) return;
+  const ids = Array.from(selectedTaskIds);
+  let archived = 0;
+  const failed = [];
+  for (const id of ids) {
+    try {
+      await api(`/tasks/${id}/archive`, { method: "POST" });
+      archived += 1;
+    } catch (err) {
+      failed.push(`#${id}: ${err.message}`);
+    }
+  }
+  clearSelection();
+  await loadTasks();
+  alert(
+    `В архив: ${archived}` +
+    (failed.length ? `\nНе удалось (${failed.length}):\n${failed.slice(0, 8).join("\n")}` : "")
+  );
+}
+
+/* ---------- Saved views ---------- */
+function viewsKey() {
+  return `kanbanViews:${currentProjectId}`;
+}
+
+function loadViews() {
+  try {
+    const raw = localStorage.getItem(viewsKey());
+    const data = raw ? JSON.parse(raw) : [];
+    return Array.isArray(data) ? data : [];
+  } catch (err) { return []; }
+}
+
+function saveViews(views) {
+  localStorage.setItem(viewsKey(), JSON.stringify(views));
+}
+
+function renderViews() {
+  const sel = $("#viewSelect");
+  if (!sel) return;
+  const views = loadViews();
+  const previous = sel.value;
+  sel.innerHTML = '<option value="">Все задачи</option>';
+  views.forEach((view, index) => {
+    const opt = document.createElement("option");
+    opt.value = String(index);
+    opt.textContent = view.name;
+    sel.appendChild(opt);
+  });
+  if (previous && views[Number(previous)]) sel.value = previous;
+}
+
+function setMultiSelected(id, values) {
+  const panel = $(`#${id} .ms-panel`);
+  if (!panel) return;
+  const wanted = new Set(values || []);
+  panel.querySelectorAll("input").forEach(input => {
+    input.checked = wanted.has(input.value);
+  });
+  if (typeof panel.onchange === "function") panel.onchange();
+}
+
+function currentView(name) {
+  return {
+    name,
+    q: $("#searchInput").value || "",
+    cats: getMultiSelected("catFilter"),
+    prios: getMultiSelected("prioFilter"),
+    archived: Boolean($("#showArchived") && $("#showArchived").checked),
+  };
+}
+
+function applyView(view) {
+  $("#searchInput").value = view.q || "";
+  setMultiSelected("catFilter", view.cats || []);
+  setMultiSelected("prioFilter", view.prios || []);
+  if ($("#showArchived")) $("#showArchived").checked = Boolean(view.archived);
+  loadTasks();
+}
+
+function saveCurrentView() {
+  const name = (prompt("Название вида:") || "").trim();
+  if (!name) return;
+  const views = loadViews().filter(view => view.name !== name);
+  views.push(currentView(name));
+  saveViews(views);
+  renderViews();
+  $("#viewSelect").value = String(views.length - 1);
+}
+
+function deleteSelectedView() {
+  const sel = $("#viewSelect");
+  const index = Number(sel.value);
+  if (!sel.value) { alert("Выберите сохранённый вид"); return; }
+  const views = loadViews();
+  const view = views[index];
+  if (!view) return;
+  if (!confirm(`Удалить вид «${view.name}»?`)) return;
+  views.splice(index, 1);
+  saveViews(views);
+  sel.value = "";
+  renderViews();
 }
 
 /* ---------- Settings ---------- */
@@ -1317,18 +2381,28 @@ function closeSettings() {
 
 /* ---------- Analyze ---------- */
 async function analyze() {
-  const res = await api(`/analyze?project_id=${currentProjectId}`);
-  const s = res.suggestion;
-  let msg = "Рекомендация: ";
-  if (s.recommendation) {
-    msg += `#${s.recommendation.id} ${s.recommendation.title} (${s.reason})`;
-  } else {
-    msg += s.reason;
+  try {
+    const res = await api(`/analyze?project_id=${currentProjectId}`);
+    const s = res.suggestion || {};
+    let msg;
+    if (s.recommendation) {
+      msg = `Рекомендация: #${s.recommendation.id} ${s.recommendation.title}\n`
+        + `Причина: ${s.reason || "приоритет и стадия"}`;
+    } else {
+      msg = `Рекомендация: ${s.reason || "подходящих задач нет"}`;
+    }
+    if (res.stalled_tasks && res.stalled_tasks.length) {
+      msg += `\n\nЗависших задач без активности >24ч (High/Critical): ${res.stalled_tasks.length}`;
+      const names = res.stalled_tasks.slice(0, 5)
+        .map(t => `#${t.id} ${t.title}`)
+        .join("\n");
+      if (names) msg += `\n${names}`;
+      if (res.stalled_tasks.length > 5) msg += "\n…";
+    }
+    alert(msg);
+  } catch (err) {
+    alert(`Не удалось выполнить анализ: ${err.message}`);
   }
-  if (res.stalled_tasks && res.stalled_tasks.length) {
-    msg += `\n\n зависших задач: ${res.stalled_tasks.length}`;
-  }
-  alert(msg);
 }
 
 /* ---------- Init ---------- */
@@ -1360,9 +2434,79 @@ document.addEventListener("DOMContentLoaded", async () => {
   $("#btnSaveTask").addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); saveTask(); });
   $("#btnCopyTaskId").addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); copyTaskId(); });
   $("#btnDeleteTask").addEventListener("click", deleteTask);
+  $("#btnArchiveTask").addEventListener("click", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    toggleArchiveCurrentTask();
+  });
+  $("#btnVerifyTask").addEventListener("click", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    verifyCurrentTask();
+  });
+  $("#btnRejectTask").addEventListener("click", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    rejectCurrentTask();
+  });
+  $("#btnConfirmReview").addEventListener("click", (e) => {
+    e.preventDefault();
+    submitReview();
+  });
+  $("#btnCancelReview").addEventListener("click", (e) => {
+    e.preventDefault();
+    closeReviewModal();
+  });
+  $("#reviewModalClose").addEventListener("click", (e) => {
+    e.preventDefault();
+    closeReviewModal();
+  });
+  $("#reviewNote").addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+      e.preventDefault();
+      submitReview();
+    }
+  });
+  $("#btnAttachReview").addEventListener("click", () => $("#reviewImageInput").click());
+  $("#reviewImageInput").addEventListener("change", (e) => {
+    addAttachmentFiles(e.target.files, reviewAttachments, renderReviewAttachments);
+    e.target.value = "";
+  });
+  $("#reviewNote").addEventListener("input", () =>
+    autoResizeTextarea($("#reviewNote"), window.innerHeight * 0.45));
+  $("#btnTaskTemplate").addEventListener("click", (e) => {
+    e.preventDefault();
+    insertTaskTemplate();
+  });
+  $("#btnAddCriterion").addEventListener("click", (e) => {
+    e.preventDefault();
+    addCriterion();
+  });
+  $("#newCriterionText").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      addCriterion();
+    }
+  });
+  $("#showArchived").addEventListener("change", () => { loadTasks(); });
+  $("#viewSelect").addEventListener("change", (e) => {
+    const value = e.target.value;
+    if (value === "") {
+      applyView({ q: "", cats: [], prios: [], archived: false });
+      return;
+    }
+    const view = loadViews()[Number(value)];
+    if (view) applyView(view);
+  });
+  $("#btnSaveView").addEventListener("click", saveCurrentView);
+  $("#btnDeleteView").addEventListener("click", deleteSelectedView);
+  $("#btnBulkMove").addEventListener("click", bulkMoveSelected);
+  $("#btnBulkArchive").addEventListener("click", bulkArchiveSelected);
+  $("#btnBulkClear").addEventListener("click", clearSelection);
   $("#btnFullscreen").addEventListener("click", () => toggleFullscreen());
 
   $("#btnTabDesc").addEventListener("click", () => setTaskTab("desc"));
+  $("#btnTabCriteria").addEventListener("click", () => setTaskTab("criteria"));
   $("#btnTabHistory").addEventListener("click", () => setTaskTab("history"));
 
   $("#btnEditDesc").addEventListener("click", () => {
@@ -1390,19 +2534,33 @@ document.addEventListener("DOMContentLoaded", async () => {
     const id = $("#taskId").value;
     if (!id) return;
     const text = $("#commentText").value.trim();
-    if (!text) return;
-    await api(`/tasks/${id}/comments`, { method: "POST", body: JSON.stringify({ author: "User", text }) });
+    if (attachmentsUploading(commentAttachments)) {
+      alert("Дождитесь загрузки изображений");
+      return;
+    }
+    if (attachmentsFailed(commentAttachments)) {
+      alert("Уберите изображения, которые не удалось загрузить");
+      return;
+    }
+    const images = attachmentUrls(commentAttachments);
+    if (!text && !images.length) return;
+    try {
+      await api(`/tasks/${id}/comments`, {
+        method: "POST",
+        body: JSON.stringify({ author: "User", text, images }),
+      });
+    } catch (err) { alert(err.message); return; }
     $("#commentText").value = "";
     $("#commentText").style.height = "auto";
+    commentAttachments = [];
+    renderCommentAttachments();
     await loadComments(id);
     await loadTasks();
   });
 
   // Enter sends; Shift+Enter inserts a newline (the input is a textarea).
   $("#commentText").addEventListener("input", () => {
-    const box = $("#commentText");
-    box.style.height = "auto";
-    box.style.height = Math.min(box.scrollHeight, 140) + "px";
+    autoResizeTextarea($("#commentText"), 140);
   });
   $("#commentText").addEventListener("keydown", (e) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -1411,29 +2569,55 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
   });
 
+  $("#btnAttachComment").addEventListener("click", () => $("#commentImageInput").click());
+  $("#commentImageInput").addEventListener("change", (e) => {
+    addAttachmentFiles(e.target.files, commentAttachments, renderCommentAttachments);
+    e.target.value = "";
+  });
+
+  // Fullscreen image viewer (comment photos and attachment previews)
+  $("#imageViewerClose").addEventListener("click", closeImageViewer);
+  $("#imageViewer").addEventListener("click", (e) => {
+    if (e.target.id === "imageViewer") closeImageViewer();
+  });
+  document.addEventListener("click", (e) => {
+    const trigger = e.target.closest("[data-image-viewer]");
+    if (!trigger) return;
+    e.preventDefault();
+    openImageViewer(trigger.dataset.imageViewer);
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && $("#imageViewer").classList.contains("active")) {
+      e.preventDefault();
+      closeImageViewer();
+    }
+  });
+
+  // Ctrl+V anywhere in an open window attaches the clipboard image:
+  // review modal -> review attachments, task modal -> comment attachments.
+  document.addEventListener("paste", (e) => {
+    if ($("#reviewModal").classList.contains("active")) {
+      pasteImagesInto(e, reviewAttachments, renderReviewAttachments);
+    } else if ($("#taskModal").classList.contains("active")) {
+      pasteImagesInto(e, commentAttachments, renderCommentAttachments);
+    }
+  });
+
   // column modal
   $("#columnModalClose").addEventListener("click", closeColumnModal);
   $("#btnSaveColumn").addEventListener("click", saveColumn);
   $("#btnDeleteColumn").addEventListener("click", deleteColumn);
-  $("#columnModal").addEventListener("click", (e) => { if (e.target.id === "columnModal") closeColumnModal(); });
+  // Modals close ONLY via their explicit buttons (✕ / Save / Delete / Cancel ...).
+  // Clicking the dimmed backdrop must never discard the user's work.
 
   $("#settingsClose").addEventListener("click", closeSettings);
-  $("#settingsOverlay").addEventListener("click", closeSettings);
-  $("#taskModal").addEventListener("click", (e) => { if (e.target.id === "taskModal") closeModal(); });
-  // Never let clicks inside the dialog bubble to the overlay and close it.
+  // Let clicks inside the dialog stay inside; the backdrop is inert.
   $("#taskModalDialog").addEventListener("click", (e) => e.stopPropagation());
 
   trackDirty();
 
   document.addEventListener("click", (e) => {
     if (!e.target.closest(".column-menu") && !e.target.closest(".ms")) closeMenus();
-  });
-
-  document.addEventListener("keydown", (e) => {
-    if (e.key !== "Escape") return;
-    if ($("#taskModal").classList.contains("active")) closeModal();
-    else if ($("#columnModal").classList.contains("active")) closeColumnModal();
-    else if ($("#settingsDrawer").classList.contains("open")) closeSettings();
   });
 
   // polling

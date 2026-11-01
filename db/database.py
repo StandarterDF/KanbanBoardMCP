@@ -214,6 +214,12 @@ CREATE TABLE IF NOT EXISTS tasks (
     column_id INTEGER NOT NULL,
     agent_id TEXT,
     affected_files TEXT DEFAULT '',
+    rejections INTEGER NOT NULL DEFAULT 0,
+    verified_at TEXT,
+    verified_by TEXT,
+    archived INTEGER NOT NULL DEFAULT 0,
+    archived_at TEXT,
+    acceptance_criteria TEXT DEFAULT '[]',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     FOREIGN KEY (column_id) REFERENCES columns(id),
@@ -225,6 +231,8 @@ CREATE TABLE IF NOT EXISTS comments (
     task_id INTEGER NOT NULL,
     author TEXT NOT NULL,
     text TEXT NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'message',
+    images TEXT NOT NULL DEFAULT '[]',
     created_at TEXT NOT NULL,
     FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
 );
@@ -278,6 +286,12 @@ def migrate(cur, conn):
     # tasks migration
     _ensure_column(cur, conn, "tasks", "project_id", "INTEGER NOT NULL DEFAULT 1")
     _ensure_column(cur, conn, "tasks", "affected_files", "TEXT DEFAULT ''")
+    _ensure_column(cur, conn, "tasks", "rejections", "INTEGER NOT NULL DEFAULT 0")
+    _ensure_column(cur, conn, "tasks", "verified_at", "TEXT")
+    _ensure_column(cur, conn, "tasks", "verified_by", "TEXT")
+    _ensure_column(cur, conn, "tasks", "archived", "INTEGER NOT NULL DEFAULT 0")
+    _ensure_column(cur, conn, "tasks", "archived_at", "TEXT")
+    _ensure_column(cur, conn, "tasks", "acceptance_criteria", "TEXT DEFAULT '[]'")
     # backfill project_id from column's project
     cur.execute(
         """UPDATE tasks SET project_id = (
@@ -288,9 +302,29 @@ def migrate(cur, conn):
         "UPDATE tasks SET project_id = ? WHERE project_id IS NULL", (default_pid,)
     )
     cur.execute("UPDATE tasks SET affected_files = '' WHERE affected_files IS NULL")
+    cur.execute("UPDATE tasks SET archived = 0 WHERE archived IS NULL")
+    cur.execute(
+        "UPDATE tasks SET acceptance_criteria = '[]' WHERE acceptance_criteria IS NULL"
+    )
 
     # audit_log migration: optional human-readable note / comment
     _ensure_column(cur, conn, "audit_log", "note", "TEXT")
+
+    # comments migration: distinguish plain messages from owner review decisions
+    _ensure_column(cur, conn, "comments", "kind", "TEXT NOT NULL DEFAULT 'message'")
+    _ensure_column(cur, conn, "comments", "images", "TEXT NOT NULL DEFAULT '[]'")
+    cur.execute("UPDATE comments SET images = '[]' WHERE images IS NULL OR images = ''")
+    cur.execute(
+        "UPDATE comments SET kind = 'reject' "
+        "WHERE kind = 'message' AND text LIKE 'Отклонено:%'"
+    )
+    cur.execute(
+        "UPDATE comments SET kind = 'verify' "
+        "WHERE kind = 'message' AND (text = 'Проверено.' OR text LIKE 'Проверено:%')"
+    )
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_comments_task_kind ON comments(task_id, kind, id)"
+    )
 
     # boards migration: every project gets a main board, every task a board_id
     migrate_boards(cur, conn)

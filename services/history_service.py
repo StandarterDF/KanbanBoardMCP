@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Optional
 
 from db.database import db_cursor, now, row_to_dict
 
-MOVE_ACTIONS = {"moved"}
+MOVE_ACTIONS = {"moved", "rejected"}
 CREATE_ACTIONS = {"created"}
 
 

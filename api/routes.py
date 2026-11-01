@@ -15,6 +15,10 @@ from models.schemas import (
     CategoryUpdate,
     BoardCreate,
     BoardUpdate,
+    RejectRequest,
+    VerifyRequest,
+    CriteriaUpdate,
+    CriterionCheck,
 )
 from services import (
     task_service,
@@ -25,6 +29,7 @@ from services import (
     history_service,
     category_service,
     boards_service,
+    upload_service,
 )
 
 router = APIRouter(prefix="/api")
@@ -32,6 +37,11 @@ router = APIRouter(prefix="/api")
 
 class MoveRequest(BaseModel):
     column_id: int
+
+
+class ImageUploadRequest(BaseModel):
+    data_url: str
+    filename: Optional[str] = None
 
 
 def _default_project_id(project_id: Optional[int] = None) -> int:
@@ -231,6 +241,7 @@ def get_tasks(
     categories: Optional[List[str]] = Query(None),
     q: Optional[str] = None,
     board_id: Optional[int] = Query(None),
+    include_archived: bool = False,
 ):
     pid = _default_project_id(project_id)
     if board_id is not None:
@@ -239,6 +250,9 @@ def get_tasks(
             raise HTTPException(
                 status_code=400, detail="Board does not belong to project"
             )
+        # The main board is an aggregate view: it shows every task of the project.
+        if board.get("is_default"):
+            board_id = None
     return task_service.list_tasks(
         project_id=pid,
         column_id=column_id,
@@ -248,6 +262,7 @@ def get_tasks(
         categories=categories,
         q=q,
         board_id=board_id,
+        include_archived=include_archived,
     )
 
 
@@ -273,6 +288,8 @@ def create_task(payload: TaskCreate):
             affected_files=payload.affected_files,
             project_id=pid,
             board_id=payload.board_id,
+            require_board=True,
+            acceptance_criteria=payload.acceptance_criteria,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -308,6 +325,91 @@ def move_task(task_id: int, payload: MoveRequest):
     return t
 
 
+@router.post("/tasks/{task_id}/reject")
+def reject_task(task_id: int, payload: RejectRequest):
+    try:
+        t = task_service.reject_task(
+            task_id,
+            payload.reason,
+            actor="user",
+            author="User",
+            return_to_column_id=payload.column_id,
+            images=payload.images,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if not t:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return t
+
+
+@router.post("/tasks/{task_id}/verify")
+def verify_task(task_id: int, payload: VerifyRequest):
+    try:
+        t = task_service.verify_task(
+            task_id,
+            actor="user",
+            note=payload.note,
+            move_to_next=payload.move_to_next,
+            author="User",
+            images=payload.images,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if not t:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return t
+
+
+@router.post("/tasks/{task_id}/archive")
+def archive_task(task_id: int):
+    t = task_service.archive_task(task_id, actor="user")
+    if not t:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return t
+
+
+@router.post("/tasks/{task_id}/restore")
+def restore_task(task_id: int):
+    t = task_service.restore_task(task_id, actor="user")
+    if not t:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return t
+
+
+@router.put("/tasks/{task_id}/criteria")
+def set_criteria(task_id: int, payload: CriteriaUpdate):
+    t = task_service.set_acceptance_criteria(task_id, payload.criteria, actor="user")
+    if not t:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return t
+
+
+@router.post("/tasks/{task_id}/criteria/{index}/check")
+def check_criterion(task_id: int, index: int, payload: CriterionCheck):
+    try:
+        t = task_service.check_criterion(
+            task_id,
+            index,
+            evidence=payload.evidence,
+            done=payload.done,
+            actor="user",
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if not t:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return t
+
+
+@router.get("/review")
+def review_queue(
+    project_id: Optional[int] = Query(None), board_id: Optional[int] = Query(None)
+):
+    pid = _default_project_id(project_id)
+    return task_service.list_review_tasks(project_id=pid, board_id=board_id)
+
+
 @router.get("/tasks/{task_id}/history")
 def get_task_history(task_id: int, project_id: Optional[int] = Query(None)):
     t = task_service.get_task(task_id)
@@ -318,14 +420,33 @@ def get_task_history(task_id: int, project_id: Optional[int] = Query(None)):
     return history_service.get_task_history(task_id)
 
 
+@router.post("/uploads")
+def upload_image(payload: ImageUploadRequest):
+    """Save a pasted/selected image and return its public URL."""
+    try:
+        return upload_service.save_data_url(payload.data_url, payload.filename)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 @router.get("/tasks/{task_id}/comments")
-def get_comments(task_id: int):
-    return comment_service.list_comments(task_id)
+def get_comments(task_id: int, kind: Optional[str] = None):
+    return comment_service.list_comments(task_id, kind=kind)
+
+
+@router.get("/tasks/{task_id}/review-comment")
+def get_review_comment(task_id: int):
+    """Return the latest owner review decision (verify/reject) for a task."""
+    return comment_service.get_last_review_comment(task_id)
 
 
 @router.post("/tasks/{task_id}/comments")
 def add_comment(task_id: int, payload: CommentCreate):
-    c = comment_service.add_comment(task_id, payload.author, payload.text)
+    if not (payload.text or "").strip() and not payload.images:
+        raise HTTPException(status_code=400, detail="Комментарий пуст")
+    c = comment_service.add_comment(
+        task_id, payload.author, payload.text or "", images=payload.images
+    )
     if not c:
         raise HTTPException(status_code=404, detail="Task not found")
     return c
@@ -349,14 +470,29 @@ def update_setting(key: str, payload: SettingUpdate):
 @router.get("/stalled")
 def get_stalled(hours: int = 24, project_id: Optional[int] = Query(None)):
     pid = _default_project_id(project_id)
-    return task_service.stalled_tasks(hours=hours, project_id=pid)
+    return task_service.stalled_tasks(
+        hours=hours, project_id=pid, priorities=["High", "Critical"]
+    )
 
 
 @router.get("/analyze")
 def analyze(project_id: Optional[int] = Query(None)):
     pid = _default_project_id(project_id)
     tasks = task_service.list_tasks(project_id=pid)
-    return task_service.analyze_next(tasks)
+    suggestion = task_service.analyze_next(
+        tasks, active_ids=task_service.active_stage_ids(pid)
+    )
+    stalled = []
+    if settings_service.is_enabled("enable_proactive_notifications"):
+        stalled = task_service.stalled_tasks(
+            hours=24, project_id=pid, priorities=["High", "Critical"]
+        )
+    # Shape matches the MCP analyze tool and the web client.
+    return {
+        "suggestion": suggestion,
+        "stalled_tasks": stalled,
+        "total_tasks": len(tasks),
+    }
 
 
 @router.post("/agents/register")

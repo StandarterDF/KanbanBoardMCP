@@ -13,12 +13,16 @@ tracker.db
 tracker.db-wal
 tracker.db-shm
 
+# Uploaded images (comment/review attachments)
+static/uploads/
+
 # Temp / test artifacts
 tmp/
 .test_out/
 *.log
 .ruff_cache/
 .pytest_cache/
+.playwright-mcp/
 
 # IDE
 .vscode/

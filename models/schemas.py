@@ -1,4 +1,4 @@
-from typing import Optional, List
+from typing import Any, Optional, List
 from pydantic import BaseModel, Field
 
 
@@ -73,6 +73,7 @@ class TaskCreate(BaseModel):
     affected_files: str = ""
     project_id: Optional[int] = None
     board_id: Optional[int] = None
+    acceptance_criteria: Optional[List[Any]] = None
 
 
 class TaskUpdate(BaseModel):
@@ -128,7 +129,33 @@ class Task(BaseModel):
 
 class CommentCreate(BaseModel):
     author: str = "User"
-    text: str
+    text: str = ""
+    images: Optional[List[str]] = None
+
+
+class RejectRequest(BaseModel):
+    reason: str
+    column_id: Optional[int] = None
+    images: Optional[List[str]] = None
+
+
+class VerifyRequest(BaseModel):
+    note: str = ""
+    move_to_next: bool = True
+    images: Optional[List[str]] = None
+
+
+class CriteriaUpdate(BaseModel):
+    criteria: List[Any]
+
+
+class CriterionCheck(BaseModel):
+    evidence: str = ""
+    done: bool = True
+
+
+class ArchiveRequest(BaseModel):
+    archived: bool = True
 
 
 class Comment(BaseModel):
@@ -136,6 +163,8 @@ class Comment(BaseModel):
     task_id: int
     author: str
     text: str
+    kind: str = "message"
+    images: List[str] = []
     created_at: str
 
 
